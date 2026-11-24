@@ -600,53 +600,53 @@ pub async fn check_update(target: &str) -> anyhow::Result<Vec<UpdateRow>> {
 }
 
 pub const RENAMED: &[(&str, &str)] = &[
-    ("qol", "extras"),
-    ("quality-of-life", "extras"),
-    ("vim", "extras"),
-    ("themes", "extras"),
-    ("permissions", "extras"),
-    ("questions", "extras"),
-    ("secrets", "extras"),
-    ("skills", "extras"),
+    ("qol", "essentials"),
+    ("quality-of-life", "essentials"),
+    ("vim", "essentials"),
+    ("themes", "essentials"),
+    ("permissions", "essentials"),
+    ("questions", "essentials"),
+    ("secrets", "essentials"),
+    ("skills", "essentials"),
     ("cloud", "account"),
     ("claude-sub", "claude"),
     ("codex-sub", "codex"),
     ("antigravity-sub", "antigravity"),
     ("devin-sub", "devin"),
     ("zai-sub", "zai"),
-    ("observe", "telemetry"),
-    ("stamp", "telemetry"),
-    ("usage", "telemetry"),
+    ("observe", "stats"),
+    ("stamp", "stats"),
+    ("usage", "stats"),
     ("bookmark", "session"),
     ("session-name", "session"),
     ("share", "session"),
     ("handoff", "session"),
     ("summarize", "session"),
-    ("commands", "input"),
-    ("preset", "input"),
-    ("transform", "input"),
-    ("inline-bash", "input"),
-    ("send-message", "inbound"),
-    ("webhooks", "inbound"),
-    ("file-trigger", "inbound"),
-    ("control", "inbound"),
-    ("checkpoint", "git-flow"),
-    ("autocommit", "git-flow"),
-    ("git-merge", "git-flow"),
-    ("review", "git-flow"),
-    ("lens", "diagnostics"),
-    ("shadcn-lint", "diagnostics"),
-    ("uv", "diagnostics"),
-    ("truncate", "context-budget"),
-    ("compact", "context-budget"),
-    ("cacheopt", "context-budget"),
-    ("header", "context-inject"),
-    ("context-pin", "context-inject"),
-    ("resources", "context-inject"),
-    ("rules", "context-inject"),
-    ("include", "context-inject"),
-    ("dirty-guard", "context-inject"),
-    ("gh-issues", "context-inject"),
+    ("commands", "prompt"),
+    ("preset", "prompt"),
+    ("transform", "prompt"),
+    ("inline-bash", "prompt"),
+    ("send-message", "gateway"),
+    ("webhooks", "gateway"),
+    ("file-trigger", "gateway"),
+    ("control", "gateway"),
+    ("checkpoint", "git"),
+    ("autocommit", "git"),
+    ("git-merge", "git"),
+    ("review", "git"),
+    ("lens", "lint"),
+    ("shadcn-lint", "lint"),
+    ("uv", "lint"),
+    ("truncate", "context"),
+    ("compact", "context"),
+    ("cacheopt", "context"),
+    ("header", "context"),
+    ("context-pin", "context"),
+    ("resources", "context"),
+    ("rules", "context"),
+    ("include", "context"),
+    ("dirty-guard", "context"),
+    ("gh-issues", "context"),
     ("todo", "tasks"),
     ("kanban", "tasks"),
     ("orchestrate", "tasks"),
@@ -671,11 +671,91 @@ pub const RENAMED: &[(&str, &str)] = &[
     ("gchat", "gateway"),
     ("mastodon", "gateway"),
     ("mattermost", "gateway"),
-    ("gate", "extras"),
-    ("confirm", "extras"),
-    ("tool-gate", "extras"),
-    ("guard", "extras"),
-    ("repguard", "extras"),
+    ("gate", "essentials"),
+    ("confirm", "essentials"),
+    ("tool-gate", "essentials"),
+    ("guard", "essentials"),
+    ("repguard", "essentials"),
+    ("extras", "essentials"),
+    ("telemetry", "stats"),
+    ("context-budget", "context"),
+    ("context-inject", "context"),
+    ("git-flow", "git"),
+    ("diagnostics", "lint"),
+    ("input", "prompt"),
+    ("inbound", "gateway"),
+];
+
+pub const BUNDLE_RENAMES: &[(&str, &str, &[&str])] = &[
+    (
+        "extras",
+        "essentials",
+        &[
+            "quality-of-life",
+            "vim",
+            "themes",
+            "permissions",
+            "guard",
+            "repguard",
+            "questions",
+            "secrets",
+            "skills",
+            "auto-continue",
+            "cd",
+            "copy",
+            "detect",
+            "export",
+            "hotkeys",
+            "intro",
+            "links",
+            "notify",
+            "recap",
+            "sessions",
+            "setup",
+            "status-command",
+            "suggest",
+            "templates",
+            "title",
+            "update",
+            "usage",
+            "usage-warn",
+        ],
+    ),
+    ("telemetry", "stats", &["observe", "stamp", "usage"]),
+    (
+        "context-budget",
+        "context",
+        &["truncate", "compact", "cacheopt"],
+    ),
+    (
+        "context-inject",
+        "context",
+        &[
+            "header",
+            "context-pin",
+            "resources",
+            "rules",
+            "include",
+            "dirty-guard",
+            "gh-issues",
+        ],
+    ),
+    (
+        "git-flow",
+        "git",
+        &["checkpoint", "autocommit", "git-merge", "review"],
+    ),
+    ("diagnostics", "lint", &["lens", "shadcn-lint", "uv"]),
+    (
+        "input",
+        "prompt",
+        &["commands", "preset", "transform", "inline-bash"],
+    ),
+    (
+        "inbound",
+        "gateway",
+        &["send-message", "webhooks", "file-trigger", "control"],
+    ),
 ];
 
 pub const PART_RENAMES: &[(&str, &str)] = &[
@@ -686,11 +766,18 @@ pub const PART_RENAMES: &[(&str, &str)] = &[
 
 pub const ALIAS_PARTS: &[(&str, &[&str])] = &[("gate", &["permissions", "guard", "repguard"])];
 
+pub fn renamed_bundle(old: &str) -> Option<(&str, &'static [&'static str])> {
+    BUNDLE_RENAMES
+        .iter()
+        .find(|(o, _, _)| *o == old)
+        .map(|(_, new, parts)| (*new, *parts))
+}
+
 pub fn part_of(old: &str) -> Option<(&str, &str)> {
-    let bundle = RENAMED.iter().find(|(o, _)| *o == old).map(|(_, n)| *n)?;
-    if ALIAS_PARTS.iter().any(|(o, _)| *o == old) {
+    if renamed_bundle(old).is_some() || ALIAS_PARTS.iter().any(|(o, _)| *o == old) {
         return None;
     }
+    let bundle = RENAMED.iter().find(|(o, _)| *o == old).map(|(_, n)| *n)?;
     let part = PART_RENAMES
         .iter()
         .find(|(o, _)| *o == old)
@@ -700,6 +787,9 @@ pub fn part_of(old: &str) -> Option<(&str, &str)> {
 }
 
 pub fn alias_parts(old: &str) -> Option<(&str, &'static [&'static str])> {
+    if let Some((bundle, parts)) = renamed_bundle(old) {
+        return Some((bundle, parts));
+    }
     let bundle = RENAMED.iter().find(|(o, _)| *o == old).map(|(_, n)| *n)?;
     let parts = ALIAS_PARTS
         .iter()
@@ -723,9 +813,30 @@ pub fn canonical_name(name: &str) -> &str {
         .unwrap_or(name)
 }
 
+fn migration_rows(
+    name: &str,
+    enabled: bool,
+    overrides: &crate::parts::Overrides,
+) -> Vec<(String, String, String, bool)> {
+    let old = overrides.get(name);
+    alias_part_names(name)
+        .into_iter()
+        .map(|(bundle, part)| {
+            let on = old.and_then(|m| m.get(part)).copied().unwrap_or(true);
+            (
+                name.to_string(),
+                bundle.to_string(),
+                part.to_string(),
+                enabled && on,
+            )
+        })
+        .collect()
+}
+
 async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow>> {
     let lock = read_lock()?;
     let before = lock.clone();
+    let overrides = crate::parts::read();
     let mut migrations: Vec<(String, String, String, bool)> = Vec::new();
     let mut done: BTreeSet<String> = BTreeSet::new();
     let names: Vec<String> = if target == "all" {
@@ -781,14 +892,7 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         let renamed = (lookup != name.as_str()).then_some(lookup);
         if done.contains(lookup) {
             if renamed.is_some() {
-                for (bundle, part) in alias_part_names(name) {
-                    migrations.push((
-                        name.clone(),
-                        bundle.to_string(),
-                        part.to_string(),
-                        installed.enabled,
-                    ));
-                }
+                migrations.extend(migration_rows(name, installed.enabled, &overrides));
                 retire_alias(name);
             }
             continue;
@@ -843,6 +947,7 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
             continue;
         }
         if !drift {
+            done.insert(lookup.to_string());
             out.push(UpdateRow::new(name, UpdateAction::Current));
             continue;
         }
@@ -878,14 +983,7 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         {
             Ok(r) => {
                 if renamed.is_some() {
-                    for (bundle, part) in alias_part_names(name) {
-                        migrations.push((
-                            name.clone(),
-                            bundle.to_string(),
-                            part.to_string(),
-                            installed.enabled,
-                        ));
-                    }
+                    migrations.extend(migration_rows(name, installed.enabled, &overrides));
                     retire_alias(name);
                 }
                 done.insert(lookup.to_string());
@@ -926,6 +1024,9 @@ fn migrate_parts(before: &LockFile, migrations: &[(String, String, String, bool)
         let preexisting = before.plugins.contains_key(bundle);
         let mut on = crate::parts::bundle(bundle);
         for (_, _, part, enabled) in &migrated {
+            if preexisting && on.contains_key(part) {
+                continue;
+            }
             on.insert(part.clone(), *enabled);
         }
         if !preexisting {
@@ -944,6 +1045,16 @@ fn migrate_parts(before: &LockFile, migrations: &[(String, String, String, bool)
         }
         if let Err(e) = crate::parts::replace(bundle, &on) {
             log::warn!("migrated bundle {bundle}: parts.json not written: {e:#}");
+        }
+        let olds: BTreeSet<&str> = migrated
+            .iter()
+            .map(|(a, _, _, _)| a.as_str())
+            .filter(|a| renamed_bundle(a).is_some())
+            .collect();
+        for old in olds {
+            if let Err(e) = crate::parts::drop_bundle(old) {
+                log::warn!("migrated bundle {bundle}: old parts key {old} not removed: {e:#}");
+            }
         }
     }
 }
@@ -1173,11 +1284,11 @@ mod rename_tests {
     use super::*;
 
     #[test]
-    fn skills_and_secrets_canonicalize_to_extras() {
-        assert_eq!(canonical_name("skills"), "extras");
-        assert_eq!(canonical_name("secrets"), "extras");
-        assert_eq!(canonical_name("qol"), "extras");
-        assert_eq!(canonical_name("extras"), "extras");
+    fn skills_and_secrets_canonicalize_to_essentials() {
+        assert_eq!(canonical_name("skills"), "essentials");
+        assert_eq!(canonical_name("secrets"), "essentials");
+        assert_eq!(canonical_name("qol"), "essentials");
+        assert_eq!(canonical_name("extras"), "essentials");
         assert_eq!(canonical_name("memory"), "memory");
     }
 }

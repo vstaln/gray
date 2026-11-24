@@ -572,20 +572,21 @@ pub(crate) async fn ensure_skills_plugin() {
     }
     let already_handled = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(&home))
         .map(|lock| {
-            lock.plugins.contains_key("extras")
+            ["essentials", "extras"]
+                .iter()
+                .any(|n| lock.plugins.contains_key(*n) || lock.is_tombstoned(n))
                 || lock.plugins.contains_key("skills")
-                || lock.is_tombstoned("extras")
         })
         .unwrap_or(false);
     if already_handled {
         let _ = std::fs::write(&stamp, b"");
         return;
     }
-    match crate::plugin_cli::install_spec(&home, "extras", false, true, None).await {
+    match crate::plugin_cli::install_spec(&home, "essentials", false, true, None).await {
         Ok(()) => {
             let _ = std::fs::write(&stamp, b"");
         }
-        Err(e) => log::warn!("extras (skills) plugin auto-install failed: {e:#}"),
+        Err(e) => log::warn!("essentials (skills) plugin auto-install failed: {e:#}"),
     }
 }
 

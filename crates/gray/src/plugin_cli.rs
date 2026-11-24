@@ -181,7 +181,7 @@ fn unknown_part(bundle: &str, part: &str, parts: &[PartInfo]) -> anyhow::Error {
 
 pub fn print_parts(home: &Path, target: &str) -> anyhow::Result<()> {
     migrate_commands_json(home);
-    let bundle = gray_pkg::ops::canonical_name(target);
+    let bundle = &installed_name(&load_lock(home)?, target);
     ensure_installed(home, bundle)?;
     let parts = parts_of(home, bundle);
     if parts.is_empty() {
@@ -390,33 +390,38 @@ pub fn toggle_managed(target: &str, on: bool) -> anyhow::Result<String> {
     let home = home()?;
     migrate_commands_json(&home);
     let lock = load_lock(&home)?;
-    if let Some((bundle, raw)) = target.split_once('/')
-        && lock.plugins.contains_key(bundle)
-    {
-        let line = toggle_part(&home, bundle, &resolve_part(bundle, raw), on)?;
-        return Ok(disabled_bundle_note(&lock, bundle, line));
+    if let Some((bundle, raw)) = target.split_once('/') {
+        let bundle = installed_name(&lock, bundle);
+        if lock.plugins.contains_key(&bundle) {
+            let line = toggle_part(&home, &bundle, &resolve_part(&bundle, raw), on)?;
+            return Ok(disabled_bundle_note(&lock, &bundle, line));
+        }
     }
-    if lock.plugins.contains_key(target) {
-        gray_pkg::ops::set_enabled(target, on)?;
+    let target = installed_name(&lock, target);
+    if lock.plugins.contains_key(&target) {
+        gray_pkg::ops::set_enabled(&target, on)?;
         return Ok(format!(
             "{} {target}",
             if on { "enabled" } else { "disabled" }
         ));
     }
-    if let Some((bundle, _)) = gray_pkg::ops::alias_parts(target) {
+    if let Some((bundle, _)) = gray_pkg::ops::alias_parts(&target) {
         let installed = lock.plugins.contains_key(bundle);
         anyhow::ensure!(
             installed,
             "{}",
-            not_installed_message(&home, gray_pkg::ops::canonical_name(target))
+            not_installed_message(&home, gray_pkg::ops::canonical_name(&target))
         );
-        return Err(anyhow::anyhow!("{}", multi_part_note(target, bundle, true)));
+        return Err(anyhow::anyhow!(
+            "{}",
+            multi_part_note(&target, bundle, true)
+        ));
     }
-    if let Some((bundle, part)) = gray_pkg::ops::part_of(target) {
+    if let Some((bundle, part)) = gray_pkg::ops::part_of(&target) {
         let line = toggle_part(&home, bundle, part, on)?;
         return Ok(disabled_bundle_note(&lock, bundle, line));
     }
-    Err(anyhow::anyhow!("{}", not_installed_message(&home, target)))
+    Err(anyhow::anyhow!("{}", not_installed_message(&home, &target)))
 }
 
 fn blurb(manifest: &serde_json::Value) -> Option<String> {
@@ -1228,6 +1233,7 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
     validate_name(name)?;
+    let name = &installed_name(&load_lock(&home)?, name);
     ensure_installed(&home, name)?;
     let removed = load_lock(&home)?.plugins.contains_key(name);
     if removed {
@@ -1275,6 +1281,7 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
 pub fn set_managed_enabled(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
+    let name = &installed_name(&load_lock(&home)?, name);
     ensure_installed(&home, name)?;
     gray_pkg::ops::set_enabled(name, on)
 }
@@ -1292,6 +1299,7 @@ pub fn global_target(name: &str) -> String {
 pub fn set_managed_global(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
+    let name = &installed_name(&load_lock(&home)?, name);
     ensure_installed(&home, name)?;
     gray_pkg::ops::set_global(name, on)
 }
@@ -1422,13 +1430,25 @@ fn not_installed_message(home: &Path, name: &str) -> String {
     }
 }
 
+fn installed_name(lock: &LockFile, name: &str) -> String {
+    if lock.plugins.contains_key(name) {
+        return name.to_string();
+    }
+    let canonical = gray_pkg::ops::canonical_name(name);
+    if canonical != name && lock.plugins.contains_key(canonical) {
+        return canonical.to_string();
+    }
+    name.to_string()
+}
+
 fn ensure_installed(home: &Path, name: &str) -> anyhow::Result<()> {
     if name == "all" {
         return Ok(());
     }
     let lock = load_lock(home)?;
+    let canonical = gray_pkg::ops::canonical_name(name);
     anyhow::ensure!(
-        lock.plugins.contains_key(name),
+        lock.plugins.contains_key(name) || lock.plugins.contains_key(canonical),
         "{}",
         not_installed_message(home, name)
     );
@@ -1632,7 +1652,12 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
     // alias — the exact spelling always wins; the variant is only a
     // fallback (subagent → subagents, plugins → plugin).
     let alt = number_variant(name);
-    let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
+    let installed = installed_name(&lock, name);
+    let aliased = (installed != name).then_some(installed);
+    let names: Vec<&str> = std::iter::once(name)
+        .chain(aliased.as_deref())
+        .chain(alt.as_deref())
+        .collect();
     for n in &names {
         lazy_adopt(home, n, &mut lock).await;
         if let Some((u, l)) = user_home.as_mut() {

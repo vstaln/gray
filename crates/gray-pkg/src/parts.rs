@@ -42,6 +42,15 @@ pub fn replace(bundle: &str, on: &BTreeMap<String, bool>) -> anyhow::Result<()> 
     write(&all)
 }
 
+pub fn drop_bundle(bundle: &str) -> anyhow::Result<()> {
+    let _guard = crate::ops::hold_registry_lock()?;
+    let mut all = read();
+    if all.remove(bundle).is_none() {
+        return Ok(());
+    }
+    write(&all)
+}
+
 fn write(all: &Overrides) -> anyhow::Result<()> {
     let path = path();
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));

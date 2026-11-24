@@ -269,7 +269,9 @@ async fn run() -> anyhow::Result<()> {
                         lock.as_ref().is_some_and(|l| l.plugins.contains_key(n))
                             || home.join("plugins").join(n).exists()
                     };
-                    let name = if has("extras") {
+                    let name = if has("essentials") {
+                        "essentials"
+                    } else if has("extras") {
                         "extras"
                     } else if has("quality-of-life") {
                         "quality-of-life"
