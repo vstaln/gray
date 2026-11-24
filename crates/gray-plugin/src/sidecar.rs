@@ -556,10 +556,16 @@ fn short_exit_status(status: &std::process::ExitStatus) -> String {
 
 impl Transport {
     fn name_of(argv: &[String]) -> String {
-        argv.first()
-            .and_then(|p| Path::new(p).file_stem())
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "this plugin".to_string())
+        let Some(path) = argv.first().map(Path::new) else {
+            return "this plugin".to_string();
+        };
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+        if stem.as_deref() == Some("plugin")
+            && let Some(dir) = path.parent().and_then(Path::file_name)
+        {
+            return dir.to_string_lossy().into_owned();
+        }
+        stem.unwrap_or_else(|| "this plugin".to_string())
     }
 
     fn new(child: Child, stdin: ChildStdin, stdout: ChildStdout, argv: Vec<String>) -> Arc<Self> {

@@ -330,14 +330,21 @@ fn machine_zone() -> Option<String> {
 }
 
 fn local_clock_minutes(tz: Option<&str>) -> Option<u64> {
-    let zone = machine_zone()?;
-    if !zone.eq_ignore_ascii_case(tz?) {
-        return None;
+    let mut date = std::process::Command::new("date");
+    date.arg("+%H:%M");
+    if let Some(tz) = tz
+        && !machine_zone().is_some_and(|zone| zone.eq_ignore_ascii_case(tz))
+    {
+        if tz.contains("..")
+            || !std::path::Path::new("/usr/share/zoneinfo")
+                .join(tz)
+                .is_file()
+        {
+            return None;
+        }
+        date.env("TZ", tz);
     }
-    let out = std::process::Command::new("date")
-        .arg("+%H:%M")
-        .output()
-        .ok()?;
+    let out = date.output().ok()?;
     let clock = String::from_utf8(out.stdout).ok()?;
     let (hour, minute) = clock.trim().split_once(':')?;
     Some(hour.parse::<u64>().ok()? % 24 * 60 + minute.parse::<u64>().ok()? % 60)
