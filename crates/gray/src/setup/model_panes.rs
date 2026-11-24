@@ -56,7 +56,7 @@ enum Job {
 }
 
 const PORTAL_URL: &str = "https://gray.alignment.id/account";
-const PTY_EXTRA: u16 = 10;
+const MODAL_MAX_H: u16 = 34;
 
 fn installed_of(rail: &[PaneProvider]) -> impl Iterator<Item = &InstalledProvider> {
     rail.iter().filter_map(|p| p.installed.as_ref())
@@ -77,13 +77,13 @@ struct Geo {
     detail_y: u16,
 }
 
-fn modal_h(term_h: u16, extra: u16) -> u16 {
-    term_h.clamp(10, 24 + extra).min(term_h.saturating_sub(2))
+fn modal_h(term_h: u16) -> u16 {
+    term_h.clamp(10, MODAL_MAX_H).min(term_h.saturating_sub(2))
 }
 
-fn geo(area: Rect, extra: u16) -> Geo {
+fn geo(area: Rect) -> Geo {
     let w = area.width.clamp(48, 84).min(area.width.saturating_sub(4));
-    let h = modal_h(area.height, extra);
+    let h = modal_h(area.height);
     let outer = Rect::new((area.width - w) / 2, (area.height - h) / 2, w, h);
     let inner = Rect::new(outer.x + 1, outer.y + 1, w - 2, h - 2);
     let rail_w = RAIL_W.min(inner.width / 3).max(14);
@@ -792,7 +792,6 @@ struct PaneView<'a> {
     portal: Option<&'a PortalBox>,
     portal_in: bool,
     adding: bool,
-    extra: u16,
     slot_sel: usize,
     slot_parts: &'a Parts,
     slot_effort: Option<&'a str>,
@@ -865,7 +864,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     let fg = |c: Color| Style::default().fg(c);
     let bold = |c: Color| fg(c).add_modifier(Modifier::BOLD);
     let fill = |c: Color| Style::default().bg(c);
-    let g = geo(area, v.extra);
+    let g = geo(area);
     let (outer, inner, rail_w, detail_y) = (g.outer, g.inner, g.rail_w, g.detail_y);
     frame.render_widget(Clear, outer);
     frame.render_widget(Paragraph::new("").style(fill(t.raised_bg)), outer);
@@ -1434,8 +1433,8 @@ fn list_rows(inner_h: u16) -> usize {
     inner_h.saturating_sub(if roomy(inner_h) { 6 } else { 5 }) as usize
 }
 
-fn list_height(term_h: u16, extra: u16) -> usize {
-    list_rows(modal_h(term_h, extra).saturating_sub(2))
+fn list_height(term_h: u16) -> usize {
+    list_rows(modal_h(term_h).saturating_sub(2))
 }
 
 fn clamp_sel(sel: usize, len: usize) -> usize {
@@ -1716,7 +1715,7 @@ pub(crate) fn run_model_panes(
                     }
                 }
             }
-            let pane_w = geo(term_area, 0).pane.width as usize;
+            let pane_w = geo(term_area).pane.width as usize;
             let (strip_lines, strip_live) = match pane_section(
                 provider,
                 strip.as_ref(),
@@ -1724,7 +1723,7 @@ pub(crate) fn run_model_panes(
                 portal_in && portal_who.is_some(),
             ) {
                 PaneSection::Logins(st) => {
-                    let max_list = list_height(term.height, PTY_EXTRA);
+                    let max_list = list_height(term.height);
                     let max_body = max_list.saturating_sub(10).clamp(5, 8);
                     (
                         logins.lines(
@@ -1750,15 +1749,8 @@ pub(crate) fn run_model_panes(
                 ),
                 PaneSection::None => (Vec::new(), false),
             };
-            let extra = if pty.is_some() {
-                PTY_EXTRA
-            } else if strip_lines.is_empty() {
-                0
-            } else {
-                strip_lines.len() as u16 + 1
-            };
             if let Some(pt) = pty.as_mut() {
-                let pane = geo(term_area, extra).pane;
+                let pane = geo(term_area).pane;
                 pt.tick(Rect::new(
                     pane.x + 1,
                     pane.y + 1,
@@ -1766,7 +1758,7 @@ pub(crate) fn run_model_panes(
                     pane.height.saturating_sub(2),
                 ));
             }
-            let list_h = list_height(term.height, extra);
+            let list_h = list_height(term.height);
             let model_h = list_h
                 .saturating_sub(strip_rows(list_h, strip_lines.len()))
                 .max(1);
@@ -1847,7 +1839,6 @@ pub(crate) fn run_model_panes(
                             portal: portal.as_ref(),
                             portal_in,
                             adding: adding.is_some(),
-                            extra,
                             slot_sel,
                             slot_parts: &slot_parts,
                             slot_effort: slot_effort.as_deref(),
@@ -1931,7 +1922,7 @@ pub(crate) fn run_model_panes(
                         let Some(argv) = logins.has_cli(plugin) else {
                             continue;
                         };
-                        let pane = geo(term_area, PTY_EXTRA).pane;
+                        let pane = geo(term_area).pane;
                         let inner = Rect::new(
                             pane.x + 1,
                             pane.y + 1,
@@ -2002,7 +1993,7 @@ pub(crate) fn run_model_panes(
                         let Some(argv) = logins.has_cli(plugin) else {
                             continue;
                         };
-                        let pane = geo(term_area, PTY_EXTRA).pane;
+                        let pane = geo(term_area).pane;
                         let inner = Rect::new(
                             pane.x + 1,
                             pane.y + 1,
