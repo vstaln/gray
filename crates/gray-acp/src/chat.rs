@@ -66,6 +66,16 @@ fn message_text(item: &Value) -> String {
     item.get("content").map(text_of_content).unwrap_or_default()
 }
 
+fn is_slash_command(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let Some(rest) = trimmed.strip_prefix('/') else {
+        return false;
+    };
+    rest.bytes()
+        .next()
+        .is_some_and(|b| b.is_ascii_alphanumeric())
+}
+
 pub fn item_to_transcript_pub(item: &Value) -> Option<String> {
     item_to_transcript(item)
 }
@@ -284,7 +294,20 @@ pub fn split_tail_with(turn: &mut PreparedTurn, images: bool) {
                 })
                 .unwrap_or_default();
             outputs.push((call_id, output));
-        } else if let Some(text) = item_to_transcript(item) {
+        } else if let Some(text) = if item_type(item) == "message"
+            && matches!(
+                item.get("role").and_then(Value::as_str),
+                None | Some("user")
+            ) {
+            let raw = message_text(item);
+            if is_slash_command(&raw) {
+                Some(raw.trim_start().to_string())
+            } else {
+                item_to_transcript(item)
+            }
+        } else {
+            item_to_transcript(item)
+        } {
             let mut t = text;
             if t.len() > MAX_TRANSCRIPT_CHARS {
                 let mut end = MAX_TRANSCRIPT_CHARS;
