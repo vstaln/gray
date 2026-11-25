@@ -108,6 +108,7 @@ pub struct Session {
     reply_text: String,
     parked: HashMap<String, Parked>,
     mid_turn: bool,
+    prompt_rx: Option<std::sync::mpsc::Receiver<Value>>,
     model: String,
     dead: bool,
     prompt_seq: u64,
@@ -321,6 +322,7 @@ fn spawn_session(driver: &dyn Driver, prep: &PreparedTurn) -> Result<Session, St
         reply_text: String::new(),
         parked: HashMap::new(),
         mid_turn: false,
+        prompt_rx: None,
         model: prep.model.clone(),
         dead: false,
         prompt_seq: 0,
@@ -409,7 +411,7 @@ fn drive_inner(
         stop_reason: "end_turn".to_string(),
         ..Default::default()
     };
-    let mut prompt_rx: Option<std::sync::mpsc::Receiver<Value>> = None;
+    let mut prompt_rx = session.prompt_rx.take();
     let mut queued_prompt: Vec<Value> = Vec::new();
 
     if session.mid_turn {
@@ -543,6 +545,8 @@ fn drive_inner(
                     flush_text(&mut result, &mut text_acc);
                     flush_thought(&mut result, &mut thought_acc);
                     result.suspended = true;
+                    session.prompt_rx = prompt_rx.take();
+                    session.absorbed = prep.input.clone();
                     session.last_used = Instant::now();
                     return Ok(result);
                 }
@@ -778,10 +782,8 @@ fn handle_update(
             }
         }
         "tool_call" | "tool_call_update" => {
-            let title = update.get("title").and_then(Value::as_str).unwrap_or("");
-            if kind == "tool_call" && !title.is_empty() {
+            if kind == "tool_call" {
                 flush_text(result, text_acc);
-                thought_acc.push_str(&format!("[tool: {title}]\n"));
             }
         }
         "usage_update" => {
@@ -893,7 +895,9 @@ pub fn dispatch_slash_command(
     let active_provider = params
         .pointer("/session/model/provider_id")
         .and_then(Value::as_str);
-    if active_provider.is_some_and(|p| p != provider_id) {
+    if active_provider.is_some_and(|p| {
+        p != provider_id && p.rsplit_once(':').map(|(_, id)| id) != Some(provider_id)
+    }) {
         return Some(json!({
             "text": format!("switch to {provider_id} first (`{slash}`) to run /{cmd}"),
         }));
