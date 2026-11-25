@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -103,12 +104,351 @@ pub(crate) fn declared_commands(home: &Path, name: &str) -> Vec<String> {
         .collect()
 }
 
+pub fn owner_of_command(home: &Path, command: &str) -> Option<String> {
+    let lock = load_lock(home).ok()?;
+    let slash = if command.starts_with('/') {
+        command.to_string()
+    } else {
+        format!("/{command}")
+    };
+    let bare = slash.trim_start_matches('/');
+    lock.plugins.iter().find_map(|(name, entry)| {
+        if !entry.enabled || entry.argv.is_empty() {
+            return None;
+        }
+        let claims = declared_commands(home, name)
+            .iter()
+            .any(|c| c == &slash || c == bare)
+            || declared_subcommands(home, name).iter().any(|c| c == bare);
+        claims.then(|| name.clone())
+    })
+}
+
 pub(crate) fn command_description(home: &Path, name: &str, command: &str) -> Option<String> {
     description_in(&metadata(home, name).ok()?, command)
 }
 
 pub(crate) fn plugin_description(home: &Path, name: &str) -> Option<String> {
     blurb(&metadata(home, name).ok()?)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartInfo {
+    pub name: String,
+    pub default: bool,
+    pub enabled: bool,
+    pub description: String,
+}
+
+pub fn parts_of(home: &Path, bundle: &str) -> Vec<PartInfo> {
+    let Ok(manifest) = metadata(home, bundle) else {
+        return Vec::new();
+    };
+    let overrides = gray_pkg::parts::bundle(bundle);
+    manifest["parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            let name = p["name"].as_str()?.to_string();
+            let default = p["default"].as_bool().unwrap_or(true);
+            let enabled = overrides
+                .get(&name)
+                .copied()
+                .or_else(|| p["enabled"].as_bool())
+                .unwrap_or(default);
+            Some(PartInfo {
+                name,
+                default,
+                enabled,
+                description: p["description"].as_str().unwrap_or_default().to_string(),
+            })
+        })
+        .collect()
+}
+
+pub fn part_count(home: &Path, bundle: &str) -> Option<(usize, usize)> {
+    let parts = parts_of(home, bundle);
+    if parts.is_empty() {
+        return None;
+    }
+    let on = parts.iter().filter(|p| p.enabled).count();
+    Some((on, parts.len()))
+}
+
+fn unknown_part(bundle: &str, part: &str, parts: &[PartInfo]) -> anyhow::Error {
+    if parts.is_empty() {
+        return anyhow::anyhow!(
+            "{bundle} has no parts in this version — run: gray plugin update {bundle}"
+        );
+    }
+    let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
+    let mut scored: Vec<(String, f64)> = names
+        .iter()
+        .map(|n| (n.to_string(), strsim::jaro_winkler(part, n)))
+        .filter(|(n, score)| *score >= 0.85 && n != part)
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let hint = scored
+        .first()
+        .map(|(n, _)| format!(" — did you mean '{n}'?"))
+        .unwrap_or_default();
+    anyhow::anyhow!(
+        "unknown part '{part}' for {bundle}{hint} (parts: {})",
+        names.join(", ")
+    )
+}
+
+pub fn print_parts(home: &Path, target: &str) -> anyhow::Result<()> {
+    migrate_commands_json(home);
+    let bundle = &installed_name(&load_lock(home)?, target);
+    ensure_installed(home, bundle)?;
+    let parts = parts_of(home, bundle);
+    if parts.is_empty() {
+        return Err(unknown_part(bundle, "", &parts));
+    }
+    let name_w = parts.iter().map(|p| p.name.len()).max().unwrap_or(0).max(4);
+    let desc_w = parts
+        .iter()
+        .map(|p| p.description.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(6);
+    println!(
+        "{:<name_w$}  {:<8}  {:<8}  {:<desc_w$}",
+        "part", "state", "default", "description"
+    );
+    for p in &parts {
+        println!(
+            "{:<name_w$}  {:<8}  {:<8}  {:<desc_w$}",
+            p.name,
+            if p.enabled { "on" } else { "off" },
+            if p.default { "on" } else { "off" },
+            p.description
+        );
+    }
+    Ok(())
+}
+
+fn pick_parts(bundle: &str, parts: &[PartInfo]) -> anyhow::Result<Option<BTreeMap<String, bool>>> {
+    use std::io::{BufRead, Write};
+    let mut on: Vec<bool> = parts.iter().map(|p| p.enabled).collect();
+    println!(
+        "{bundle} is made of {} parts — pick the ones to turn on:",
+        parts.len()
+    );
+    let stdin = std::io::stdin();
+    loop {
+        for (i, p) in parts.iter().enumerate() {
+            println!(
+                "  [{}] {}  {}",
+                if on[i] { "x" } else { " " },
+                p.name,
+                p.description
+            );
+        }
+        print!("  numbers to toggle, e.g. 1,3 (enter = keep as shown, q = cancel): ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 {
+            break;
+        }
+        let text = line.trim();
+        if text == "q" || text == "quit" {
+            return Ok(None);
+        }
+        if text.is_empty() {
+            break;
+        }
+        for token in text.split(|c: char| c == ',' || c.is_whitespace()) {
+            let Ok(n) = token.parse::<usize>() else {
+                continue;
+            };
+            if n >= 1 && n <= parts.len() {
+                on[n - 1] = !on[n - 1];
+            }
+        }
+    }
+    Ok(Some(
+        parts
+            .iter()
+            .zip(&on)
+            .map(|(p, on)| (p.name.clone(), *on))
+            .collect(),
+    ))
+}
+
+fn write_parts(
+    home: &Path,
+    bundle: &str,
+    parts: &[PartInfo],
+    chosen: &BTreeMap<String, bool>,
+    announce: bool,
+) -> anyhow::Result<()> {
+    gray_pkg::parts::replace(bundle, chosen)?;
+    if !announce {
+        return Ok(());
+    }
+    let on: Vec<&str> = parts
+        .iter()
+        .filter(|p| chosen.get(&p.name).copied().unwrap_or(false))
+        .map(|p| p.name.as_str())
+        .collect();
+    println!(
+        "{bundle}: {} of {} parts on ({}) — applies to new sessions",
+        on.len(),
+        parts.len(),
+        if on.is_empty() {
+            "none".to_string()
+        } else {
+            on.join(", ")
+        }
+    );
+    let _ = home;
+    Ok(())
+}
+
+fn resolve_part(bundle: &str, raw: &str) -> String {
+    let trimmed = raw.trim().trim_start_matches('/');
+    let tail = match trimmed.split_once('/') {
+        Some((head, rest)) if head == bundle => rest,
+        _ => trimmed,
+    };
+    gray_pkg::ops::part_of(tail)
+        .filter(|(b, _)| b == bundle)
+        .map(|(_, part)| part)
+        .unwrap_or_else(|| tail.to_string())
+}
+
+fn apply_parts_after_install(
+    home: &Path,
+    bundle: &str,
+    explicit: Option<&[String]>,
+    yes: bool,
+) -> anyhow::Result<()> {
+    let parts = parts_of(home, bundle);
+    if parts.is_empty() {
+        return match explicit {
+            Some(_) => Err(unknown_part(bundle, "", &parts)),
+            None => Ok(()),
+        };
+    }
+    if let Some(list) = explicit {
+        let mut chosen = BTreeMap::new();
+        for p in &parts {
+            chosen.insert(p.name.clone(), false);
+        }
+        for name in list {
+            let part = resolve_part(bundle, name);
+            if part.is_empty() {
+                continue;
+            }
+            match parts.iter().find(|p| p.name == part) {
+                Some(p) => {
+                    chosen.insert(p.name.clone(), true);
+                }
+                None => return Err(unknown_part(bundle, &part, &parts)),
+            }
+        }
+        return write_parts(home, bundle, &parts, &chosen, true);
+    }
+    if yes || !interactive() || parts.len() < 2 {
+        return Ok(());
+    }
+    match pick_parts(bundle, &parts)? {
+        Some(chosen) => write_parts(home, bundle, &parts, &chosen, true),
+        None => {
+            println!("{bundle} installed with its default parts");
+            Ok(())
+        }
+    }
+}
+
+fn toggle_part(home: &Path, bundle: &str, part: &str, on: bool) -> anyhow::Result<String> {
+    ensure_installed(home, bundle)?;
+    let parts = parts_of(home, bundle);
+    if parts.is_empty() || !parts.iter().any(|p| p.name == part) {
+        return Err(unknown_part(bundle, part, &parts));
+    }
+    gray_pkg::parts::set(bundle, part, on)?;
+    Ok(format!(
+        "{part} is part of {bundle}: turned it {} (applies to new sessions)",
+        if on { "on" } else { "off" }
+    ))
+}
+
+fn multi_part_note(alias: &str, bundle: &str, installed: bool) -> String {
+    let parts = gray_pkg::ops::alias_parts(alias)
+        .map(|(_, p)| p.to_vec())
+        .unwrap_or_default();
+    let list = parts.join(", ");
+    if !installed {
+        return format!(
+            "'{alias}' is now part of the {bundle} bundle — install it with: gray plugin install {bundle}"
+        );
+    }
+    let hints: Vec<String> = parts
+        .iter()
+        .map(|p| format!("gray plugin enable {bundle}/{p}"))
+        .collect();
+    format!(
+        "'{alias}' is now part of the {bundle} bundle, split across its parts ({list}) — toggle them with: {}",
+        hints.join(", ")
+    )
+}
+
+fn disabled_bundle_note(lock: &LockFile, bundle: &str, line: String) -> String {
+    if lock.plugins.get(bundle).is_some_and(|e| !e.enabled) {
+        return format!(
+            "{line}\nnote: {bundle} itself is disabled — turn it back on with: gray plugin enable {bundle}"
+        );
+    }
+    line
+}
+
+pub fn toggle_managed(target: &str, on: bool) -> anyhow::Result<String> {
+    let home = home()?;
+    migrate_commands_json(&home);
+    let lock = load_lock(&home)?;
+    if let Some((bundle, raw)) = target.split_once('/') {
+        let bundle = installed_name(&lock, bundle);
+        if lock.plugins.contains_key(&bundle) {
+            let line = toggle_part(&home, &bundle, &resolve_part(&bundle, raw), on)?;
+            return Ok(disabled_bundle_note(&lock, &bundle, line));
+        }
+    }
+    if lock.plugins.contains_key(target) {
+        gray_pkg::ops::set_enabled(target, on)?;
+        return Ok(format!(
+            "{} {target}",
+            if on { "enabled" } else { "disabled" }
+        ));
+    }
+    if let Some((bundle, _)) = gray_pkg::ops::alias_parts(target) {
+        let installed = lock.plugins.contains_key(&bundle);
+        anyhow::ensure!(
+            installed,
+            "{}",
+            not_installed_message(&home, &gray_pkg::ops::canonical_name(target))
+        );
+        return Err(anyhow::anyhow!(
+            "{}",
+            multi_part_note(target, &bundle, true)
+        ));
+    }
+    if let Some((bundle, part)) = gray_pkg::ops::part_of(target) {
+        let line = toggle_part(&home, &bundle, &part, on)?;
+        return Ok(disabled_bundle_note(&lock, &bundle, line));
+    }
+    let target = installed_name(&lock, target);
+    if lock.plugins.contains_key(&target) {
+        gray_pkg::ops::set_enabled(&target, on)?;
+        return Ok(format!(
+            "{} {target}",
+            if on { "enabled" } else { "disabled" }
+        ));
+    }
+    Err(anyhow::anyhow!("{}", not_installed_message(&home, &target)))
 }
 
 fn blurb(manifest: &serde_json::Value) -> Option<String> {
@@ -188,10 +528,136 @@ pub async fn install_spec_lines(
     spec: &str,
     force: bool,
 ) -> anyhow::Result<Vec<String>> {
-    install_spec_gated(home, spec, force, TrustGate::Lines).await
+    install_spec_gated(home, spec, force, TrustGate::Lines, None).await
+}
+
+fn alias_install_target(
+    spec: &str,
+    before: &BTreeSet<String>,
+    explicit: bool,
+) -> Option<(String, String, Vec<String>)> {
+    if explicit {
+        return None;
+    }
+    let gray_pkg::ops::NameOrUrl::Name(name) = gray_pkg::ops::parse_spec(spec) else {
+        return None;
+    };
+    let bundle = gray_pkg::ops::canonical_name(&name).to_string();
+    if bundle == name || before.contains(&bundle) {
+        return None;
+    }
+    let mut wanted: Vec<String> = gray_pkg::ops::alias_part_names(&name)
+        .into_iter()
+        .map(|(_, part)| part.to_string())
+        .collect();
+    wanted.dedup();
+    Some((name, bundle, wanted))
+}
+
+fn apply_alias_parts(
+    home: &Path,
+    bundle: &str,
+    alias: &str,
+    wanted: &[String],
+) -> anyhow::Result<String> {
+    let parts = parts_of(home, bundle);
+    let on: Vec<&str> = parts
+        .iter()
+        .filter(|p| wanted.contains(&p.name))
+        .map(|p| p.name.as_str())
+        .collect();
+    if on.is_empty() {
+        return Ok(format!(
+            "note: '{alias}' is now part of '{bundle}' — installing {bundle}"
+        ));
+    }
+    let mut chosen = BTreeMap::new();
+    for p in &parts {
+        chosen.insert(p.name.clone(), on.contains(&p.name.as_str()));
+    }
+    write_parts(home, bundle, &parts, &chosen, false)?;
+    Ok(format!(
+        "note: '{alias}' is now part of '{bundle}': installed {bundle} with only {} turned on (gray plugin parts {bundle} to add more)",
+        on.join(", ")
+    ))
 }
 
 async fn install_spec_gated(
+    home: &Path,
+    spec: &str,
+    force: bool,
+    gate: TrustGate,
+    parts: Option<Vec<String>>,
+) -> anyhow::Result<Vec<String>> {
+    gray_pkg::index::ensure_cached().await;
+    let before: BTreeSet<String> = load_lock(home)
+        .map(|l| l.plugins.into_keys().collect())
+        .unwrap_or_default();
+    let renamed_from = alias_install_target(spec, &before, parts.is_some());
+    let mut lines = install_spec_body(home, spec, force, gate).await?;
+    let Ok(after) = load_lock(home) else {
+        return Ok(lines);
+    };
+    let mut wanted: Vec<String> = after
+        .plugins
+        .keys()
+        .filter(|k| !before.contains(*k))
+        .cloned()
+        .collect();
+    if wanted.is_empty()
+        && let gray_pkg::ops::NameOrUrl::Name(name) = gray_pkg::ops::parse_spec(spec)
+    {
+        let canonical = gray_pkg::ops::canonical_name(&name).to_string();
+        if after.plugins.contains_key(&canonical) {
+            wanted.push(canonical);
+        }
+    }
+    if let gray_pkg::ops::NameOrUrl::Name(name) = gray_pkg::ops::parse_spec(spec) {
+        let canonical = gray_pkg::ops::canonical_name(&name);
+        if wanted.iter().any(|w| w.as_str() == canonical.as_ref()) {
+            wanted.retain(|w| w.as_str() == canonical.as_ref());
+        }
+    }
+    let mut parts_failed: Option<String> = None;
+    let mut note: Option<String> = None;
+    for name in wanted {
+        if !after.plugins.contains_key(&name) {
+            continue;
+        }
+        let applied = match &renamed_from {
+            Some((alias, bundle, only)) if *bundle == name => {
+                match apply_alias_parts(home, &name, alias, only) {
+                    Ok(line) => {
+                        note = Some(line);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            _ => apply_parts_after_install(
+                home,
+                &name,
+                parts.as_deref(),
+                matches!(gate, TrustGate::Quiet),
+            ),
+        };
+        if let Err(e) = applied {
+            parts_failed.get_or_insert(format!("{e:#}"));
+        }
+    }
+    if let Some(first) = parts_failed.into_iter().next() {
+        for line in &lines {
+            println!("{line}");
+        }
+        anyhow::bail!("{first}");
+    }
+    if let Some(line) = note {
+        lines.insert(0, line);
+    }
+    Ok(lines)
+}
+
+async fn install_spec_body(
     home: &Path,
     spec: &str,
     force: bool,
@@ -220,12 +686,29 @@ async fn install_spec_gated(
     let mut parsed = gray_pkg::ops::parse_spec(spec);
     let mut lines = Vec::new();
     if let gray_pkg::ops::NameOrUrl::Name(ref mut name) = parsed {
-        let canonical = gray_pkg::ops::canonical_name(name);
-        if canonical != name.as_str() {
-            lines.push(format!(
-                "note: '{name}' is now part of '{canonical}' — installing {canonical}"
-            ));
-            *name = canonical.to_string();
+        let canonical = gray_pkg::ops::canonical_name(name).into_owned();
+        if canonical != *name {
+            let installed = load_lock(home)
+                .map(|l| l.plugins.contains_key(&canonical))
+                .unwrap_or(false);
+            if installed && let Some((bundle, part)) = gray_pkg::ops::part_of(name) {
+                let line = toggle_part(home, &bundle, &part, true)?;
+                let line = match load_lock(home) {
+                    Ok(lock) => disabled_bundle_note(&lock, &bundle, line),
+                    Err(_) => line,
+                };
+                for l in line.lines() {
+                    lines.push(l.to_string());
+                }
+                lines.push(format!("{bundle} is already installed — no reinstall"));
+                return Ok(lines);
+            }
+            if installed && let Some((bundle, _)) = gray_pkg::ops::alias_parts(name) {
+                lines.push(multi_part_note(name, &bundle, true));
+                lines.push(format!("{bundle} is already installed — no reinstall"));
+                return Ok(lines);
+            }
+            *name = canonical;
         }
     }
 
@@ -328,22 +811,28 @@ async fn install_spec_gated(
 }
 
 pub(crate) async fn install_spec_default(home: &Path, spec: &str) -> anyhow::Result<()> {
-    install_spec_gated(home, spec, false, TrustGate::Lines)
+    install_spec_gated(home, spec, false, TrustGate::Lines, None)
         .await
         .map(|_| ())
 }
 
 pub(crate) async fn install_spec_consent(home: &Path, spec: &str) -> anyhow::Result<Vec<String>> {
-    install_spec_gated(home, spec, false, TrustGate::Consent).await
+    install_spec_gated(home, spec, false, TrustGate::Consent, None).await
 }
 
-pub async fn install_spec(home: &Path, spec: &str, force: bool, yes: bool) -> anyhow::Result<()> {
+pub async fn install_spec(
+    home: &Path,
+    spec: &str,
+    force: bool,
+    yes: bool,
+    parts: Option<Vec<String>>,
+) -> anyhow::Result<()> {
     let gate = if yes {
         TrustGate::Quiet
     } else {
         TrustGate::Ask
     };
-    for line in install_spec_gated(home, spec, force, gate).await? {
+    for line in install_spec_gated(home, spec, force, gate, parts).await? {
         println!("{line}");
     }
     Ok(())
@@ -359,11 +848,11 @@ pub async fn install(home: &Path, name: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     if name == "background" {
-        install_spec(home, name, false, false).await?;
+        install_spec(home, name, false, false, None).await?;
         return Ok(());
     }
     if index_entry(name).await.is_some() {
-        install_spec(home, name, false, false).await?;
+        install_spec(home, name, false, false, None).await?;
         return Ok(());
     }
     if let Some(candidate) = native_on_path(name) {
@@ -386,10 +875,11 @@ pub async fn install_specs(
     specs: &[String],
     force: bool,
     yes: bool,
+    parts: Option<Vec<String>>,
 ) -> anyhow::Result<()> {
     let mut failed = Vec::new();
     for spec in specs {
-        if let Err(e) = install_spec(home, spec, force, yes).await {
+        if let Err(e) = install_spec(home, spec, force, yes, parts.clone()).await {
             eprintln!("{spec}: {e:#}");
             failed.push(spec.as_str());
         }
@@ -771,6 +1261,7 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
     validate_name(name)?;
+    let name = &installed_name(&load_lock(&home)?, name);
     ensure_installed(&home, name)?;
     let removed = load_lock(&home)?.plugins.contains_key(name);
     if removed {
@@ -794,7 +1285,7 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
     if crate::default_plugins::read_profile(&home) != "bare"
         || crate::default_plugins::FALLBACK_DEFAULT_PROFILE
             .iter()
-            .any(|d| *d == name || gray_pkg::ops::canonical_name(d) == name)
+            .any(|d| *d == name || gray_pkg::ops::canonical_name(d).as_ref() == name.as_str())
     {
         let lock_file = gray_plugin::lock::lock_path(&home);
         let mut lock = load_lock(&home)?;
@@ -818,38 +1309,51 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
 pub fn set_managed_enabled(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
+    let name = &installed_name(&load_lock(&home)?, name);
     ensure_installed(&home, name)?;
     gray_pkg::ops::set_enabled(name, on)
+}
+
+pub fn global_target(name: &str) -> String {
+    match home() {
+        Ok(home) => match load_lock(&home) {
+            Ok(lock) if lock.plugins.contains_key(name) => name.to_string(),
+            _ => gray_pkg::ops::canonical_name(name).to_string(),
+        },
+        Err(_) => name.to_string(),
+    }
 }
 
 pub fn set_managed_global(name: &str, on: bool) -> anyhow::Result<()> {
     let home = home()?;
     migrate_commands_json(&home);
+    let name = &installed_name(&load_lock(&home)?, name);
     ensure_installed(&home, name)?;
     gray_pkg::ops::set_global(name, on)
 }
 
-fn resolve_update_target<'a>(home: &Path, target: &'a str) -> &'a str {
+fn resolve_update_target(home: &Path, target: &str) -> String {
     if target == "all" {
-        return target;
+        return target.to_string();
     }
     let Ok(lock) = load_lock(home) else {
-        return target;
+        return target.to_string();
     };
     if lock.plugins.contains_key(target) {
-        return target;
+        return target.to_string();
     }
-    gray_pkg::ops::RENAMED
-        .iter()
-        .find(|(old, new)| *new == target && lock.plugins.contains_key(*old))
-        .map_or(target, |(old, _)| *old)
+    gray_pkg::ops::aliases_of(target)
+        .into_iter()
+        .find(|old| lock.plugins.contains_key(old))
+        .unwrap_or_else(|| target.to_string())
 }
 
 pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
     let home = home()?;
+    gray_pkg::index::ensure_cached().await;
     let target = resolve_update_target(&home, target);
-    ensure_installed(&home, target)?;
-    let mut reports = gray_pkg::ops::update(target).await?;
+    ensure_installed(&home, &target)?;
+    let mut reports = gray_pkg::ops::update(&target).await?;
     for r in &mut reports {
         if !matches!(&r.action, gray_pkg::ops::UpdateAction::Installed(_)) {
             continue;
@@ -873,9 +1377,10 @@ pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::U
 
 pub async fn check_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
     let home = home()?;
+    gray_pkg::index::ensure_cached().await;
     let target = resolve_update_target(&home, target);
-    ensure_installed(&home, target)?;
-    gray_pkg::ops::check_update(target).await
+    ensure_installed(&home, &target)?;
+    gray_pkg::ops::check_update(&target).await
 }
 
 /// The singular/plural counterpart of `name`: drops a trailing 's', or
@@ -955,13 +1460,25 @@ fn not_installed_message(home: &Path, name: &str) -> String {
     }
 }
 
+fn installed_name(lock: &LockFile, name: &str) -> String {
+    if lock.plugins.contains_key(name) {
+        return name.to_string();
+    }
+    let canonical = gray_pkg::ops::canonical_name(name);
+    if canonical.as_ref() != name && lock.plugins.contains_key(canonical.as_ref()) {
+        return canonical.into_owned();
+    }
+    name.to_string()
+}
+
 fn ensure_installed(home: &Path, name: &str) -> anyhow::Result<()> {
     if name == "all" {
         return Ok(());
     }
     let lock = load_lock(home)?;
+    let canonical = gray_pkg::ops::canonical_name(name);
     anyhow::ensure!(
-        lock.plugins.contains_key(name),
+        lock.plugins.contains_key(name) || lock.plugins.contains_key(canonical.as_ref()),
         "{}",
         not_installed_message(home, name)
     );
@@ -1125,6 +1642,33 @@ pub(crate) fn forwardable_names() -> std::collections::BTreeSet<String> {
     names
 }
 
+fn alias_cli_target(
+    home: &Path,
+    lock: &LockFile,
+    user_home: Option<&(PathBuf, LockFile)>,
+    name: &str,
+) -> Option<(PathBuf, String, LockEntry, String)> {
+    if lock.plugins.contains_key(name)
+        || user_home.is_some_and(|(_, l)| l.plugins.contains_key(name))
+    {
+        return None;
+    }
+    let (bundle, part) = gray_pkg::ops::part_of(name)?;
+    let (bundle_home, entry) = match lock.plugins.get(&bundle) {
+        Some(entry) => (home.to_path_buf(), entry.clone()),
+        None => {
+            let (u, l) = user_home?;
+            (u.clone(), l.plugins.get(&bundle)?.clone())
+        }
+    };
+    entry.cli_argv.as_ref()?;
+    let parts = parts_of(&bundle_home, &bundle);
+    if !parts.is_empty() && !parts.iter().any(|p| p.name == part) {
+        return None;
+    }
+    Some((bundle_home, bundle, entry, part))
+}
+
 pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
     validate_name(name)?;
     migrate_commands_json(home);
@@ -1138,7 +1682,14 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
     // alias — the exact spelling always wins; the variant is only a
     // fallback (subagent → subagents, plugins → plugin).
     let alt = number_variant(name);
-    let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
+    let is_part_alias =
+        gray_pkg::ops::part_of(name).is_some() || gray_pkg::ops::alias_parts(name).is_some();
+    let installed = installed_name(&lock, name);
+    let aliased = (!is_part_alias && installed != name).then_some(installed);
+    let names: Vec<&str> = std::iter::once(name)
+        .chain(aliased.as_deref())
+        .chain(alt.as_deref())
+        .collect();
     for n in &names {
         lazy_adopt(home, n, &mut lock).await;
         if let Some((u, l)) = user_home.as_mut() {
@@ -1201,10 +1752,30 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
                         disabled_hint(home, dead_home, project.as_ref(), owner)
                     ));
                 }
+                None if let Some((h, owner, e, part)) =
+                    alias_cli_target(home, &lock, user_home.as_ref(), name) =>
+                {
+                    (e, h, owner, Some(part))
+                }
                 None => {
                     return Err(anyhow::anyhow!(if sidecar_named {
                         sidecar_usage(home, name)
                     } else {
+                        if let Some((bundle, _)) = gray_pkg::ops::alias_parts(name) {
+                            let installed = lock.plugins.contains_key(&bundle)
+                                || user_home
+                                    .as_ref()
+                                    .is_some_and(|(_, l)| l.plugins.contains_key(&bundle));
+                            return Err(anyhow::anyhow!(
+                                "{}",
+                                multi_part_note(name, &bundle, installed)
+                            ));
+                        }
+                        if let Some((bundle, _)) = gray_pkg::ops::part_of(name) {
+                            return Err(anyhow::anyhow!(
+                                "'{name}' is now a part of the {bundle} bundle — install it with: gray plugin install {bundle}"
+                            ));
+                        }
                         match index_owner_hint(name).await {
                             Some(hint) => hint,
                             None => removed_builtin(name).map(str::to_string).unwrap_or_else(
@@ -1523,7 +2094,14 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
 
     // Same implicit singular/plural alias as `forward`: exact first.
     let alt = number_variant(name);
-    let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
+    let is_part_alias =
+        gray_pkg::ops::part_of(name).is_some() || gray_pkg::ops::alias_parts(name).is_some();
+    let installed = installed_name(&lock, name);
+    let aliased = (!is_part_alias && installed != name).then_some(installed);
+    let names: Vec<&str> = std::iter::once(name)
+        .chain(aliased.as_deref())
+        .chain(alt.as_deref())
+        .collect();
     for n in &names {
         lazy_adopt(&home, n, &mut lock).await;
         if let Some((u, l)) = user_home.as_mut() {
@@ -1548,39 +2126,45 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
             break;
         }
     }
-    let selected = selected.or_else(|| {
-        let mut claimers = Vec::new();
-        for n in &names {
-            claimers.extend(
-                owners_for_command(&home, n, &lock, false)
-                    .into_iter()
-                    .map(|(h, o, e)| (h, o, e, (*n).to_string())),
-            );
-        }
-        if let Some((u, l)) = &user_home {
+    let selected = selected
+        .or_else(|| {
+            let mut claimers = Vec::new();
             for n in &names {
                 claimers.extend(
-                    owners_for_command(u, n, l, true)
+                    owners_for_command(&home, n, &lock, false)
                         .into_iter()
                         .map(|(h, o, e)| (h, o, e, (*n).to_string())),
                 );
             }
-        }
-        let (ready, dead): (Vec<_>, Vec<_>) = claimers
-            .into_iter()
-            .partition(|(h, o, e, _)| enabled(h, o, e));
-        conflict_note = command_conflict_note(name, ready.iter().map(|(_, o, _, _)| o.as_str()));
-        if ready.is_empty() {
-            if let Some((u, owner, e, matched)) = dead.into_iter().next() {
-                return Some((u, owner, e, Some(matched)));
+            if let Some((u, l)) = &user_home {
+                for n in &names {
+                    claimers.extend(
+                        owners_for_command(u, n, l, true)
+                            .into_iter()
+                            .map(|(h, o, e)| (h, o, e, (*n).to_string())),
+                    );
+                }
             }
-            return None;
-        }
-        ready
-            .into_iter()
-            .next()
-            .map(|(u, owner, e, matched)| (u, owner, e, Some(matched)))
-    });
+            let (ready, dead): (Vec<_>, Vec<_>) = claimers
+                .into_iter()
+                .partition(|(h, o, e, _)| enabled(h, o, e));
+            conflict_note =
+                command_conflict_note(name, ready.iter().map(|(_, o, _, _)| o.as_str()));
+            if ready.is_empty() {
+                if let Some((u, owner, e, matched)) = dead.into_iter().next() {
+                    return Some((u, owner, e, Some(matched)));
+                }
+                return None;
+            }
+            ready
+                .into_iter()
+                .next()
+                .map(|(u, owner, e, matched)| (u, owner, e, Some(matched)))
+        })
+        .or_else(|| {
+            alias_cli_target(&home, &lock, user_home.as_ref(), name)
+                .map(|(h, o, e, p)| (h, o, e, Some(p)))
+        });
     let Some((entry_home, entry_name, entry, prepend)) = selected else {
         return Ok(match index_owner_hint(name).await {
             Some(hint) => Some(hint),
@@ -2027,7 +2611,7 @@ mod dynamic_completion_tests {
 
         let mut lock = LockFile::default();
         lock.plugins.insert(
-            "extras".into(),
+            "essentials".into(),
             LockEntry {
                 ecosystem: "gray-native".into(),
                 version: "0.4.0".into(),
@@ -2038,9 +2622,9 @@ mod dynamic_completion_tests {
             },
         );
         std::fs::write(
-            plugins_dir.join("extras-manifest.json"),
+            plugins_dir.join("essentials-manifest.json"),
             serde_json::json!({
-                "name": "extras",
+                "name": "essentials",
                 "commands": ["/export", "/skills"],
                 "command_completions": {
                     "/export": ["clip", "md"],
@@ -2051,7 +2635,7 @@ mod dynamic_completion_tests {
         )
         .unwrap();
         std::fs::write(
-            plugins_dir.join("extras-completion.json"),
+            plugins_dir.join("essentials-completion.json"),
             serde_json::json!({
                 "command_completions": {
                     "/skills": [

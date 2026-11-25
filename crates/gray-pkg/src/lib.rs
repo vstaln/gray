@@ -2,6 +2,7 @@ pub mod errors;
 pub mod fetch;
 pub mod index;
 pub mod ops;
+pub mod parts;
 
 use std::path::PathBuf;
 

@@ -75,6 +75,20 @@ pub struct Entry {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<IndexProviderDecl>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<IndexPart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexPart {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub default: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 /// A provider declaration copied from a plugin's manifest into the index —
@@ -168,12 +182,37 @@ fn read_cache(file: &str) -> anyhow::Result<IndexCache> {
     Ok(serde_json::from_str(&raw)?)
 }
 
+pub async fn ensure_cached() {
+    if read_cache("hub-index-cache.json").is_ok() || read_cache("index-cache.json").is_ok() {
+        return;
+    }
+    if let Ok(client) = crate::fetch::client() {
+        let _ = fetch_hub_index(&client).await;
+    }
+}
+
+pub fn cached() -> Index {
+    let mut index = read_cache("hub-index-cache.json")
+        .map(|c| c.index)
+        .unwrap_or(Index {
+            profiles: BTreeMap::new(),
+            plugins: BTreeMap::new(),
+        });
+    if let Ok(c) = read_cache("index-cache.json") {
+        for (name, entry) in c.index.plugins {
+            index.plugins.entry(name).or_insert(entry);
+        }
+    }
+    index
+}
+
 fn write_cache(file: &str, cache: &IndexCache) -> anyhow::Result<()> {
     let path = cache_path(file);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&path, serde_json::to_string(cache)?)?;
+    crate::ops::invalidate_renames();
     Ok(())
 }
 

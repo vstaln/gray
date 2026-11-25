@@ -5,7 +5,7 @@ use gray_pkg::index::{Index, fetch_index};
 use gray_plugin::lock::{LockFile, lock_path};
 
 pub const FALLBACK_DEFAULT_PROFILE: &[&str] =
-    &["account", "extras", "memory", "search", "subagents"];
+    &["account", "essentials", "memory", "search", "subagents"];
 
 const RETRY: Duration = Duration::from_secs(24 * 60 * 60);
 const PROFILE_FILE: &str = "profile";
@@ -27,10 +27,11 @@ pub fn read_profile(home: &Path) -> String {
         }
     }
     if let Ok(lock) = LockFile::load(&lock_path(home)) {
-        let has_default = FALLBACK_DEFAULT_PROFILE.iter().any(|name| {
-            let canonical = gray_pkg::ops::canonical_name(name);
-            lock.plugins.contains_key(*name) || lock.plugins.contains_key(canonical)
-        }) || lock.plugins.contains_key("quality-of-life");
+        let has_default = lock.plugins.keys().any(|installed| {
+            let canonical = gray_pkg::ops::canonical_name(installed);
+            FALLBACK_DEFAULT_PROFILE.contains(&installed.as_str())
+                || FALLBACK_DEFAULT_PROFILE.contains(&canonical.as_ref())
+        });
         if has_default {
             return "default".to_string();
         }
@@ -52,7 +53,7 @@ fn needed(home: &Path, name: &str) -> bool {
         return true;
     };
     let canonical = gray_pkg::ops::canonical_name(name);
-    [name, canonical]
+    [name, canonical.as_ref()]
         .iter()
         .all(|n| !lock.plugins.contains_key(*n) && !lock.is_tombstoned(n))
 }
@@ -101,25 +102,6 @@ async fn load_profile_plugins(profile: &str) -> (Vec<String>, Option<Index>) {
     (fallback, index)
 }
 
-fn preserve_vim_mode(home: &Path) {
-    let dir = home.join("plugin-settings");
-    let dst = dir.join("extras.json");
-    let mut map = std::fs::read_to_string(&dst)
-        .or_else(|_| std::fs::read_to_string(dir.join("quality-of-life.json")))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
-    if map.contains_key("vim_mode") {
-        return;
-    }
-    map.insert("vim_mode".to_string(), serde_json::Value::Bool(true));
-    let _ = std::fs::create_dir_all(&dir);
-    if let Ok(text) = serde_json::to_string_pretty(&serde_json::Value::Object(map)) {
-        let _ = std::fs::write(&dst, text);
-    }
-}
-
 fn needs_upgrade_before_retire(
     installed: &gray_plugin::lock::LockEntry,
     index_entry: &gray_pkg::index::Entry,
@@ -141,9 +123,7 @@ fn plan_superseded_retirements(lock: &LockFile, index: &Index) -> Vec<(String, b
     let mut plan = Vec::new();
     for (installed, lock_entry) in &lock.plugins {
         let canonical = gray_pkg::ops::canonical_name(installed);
-        // Only retire legacy plugins when the canonical replacement itself is
-        // actually installed — never let one legacy plugin retire another.
-        if installed != canonical {
+        if installed.as_str() != canonical.as_ref() {
             continue;
         }
         let Some(entry) = index.plugins.get(installed) else {
@@ -178,7 +158,7 @@ async fn retire_superseded(home: &Path, index: &Index, yes: bool) -> (Vec<String
     for (canonical, upgrade, olds) in plan {
         if upgrade {
             let res = if yes {
-                crate::plugin_cli::install_spec(home, &canonical, false, true).await
+                crate::plugin_cli::install_spec(home, &canonical, false, true, None).await
             } else {
                 crate::plugin_cli::install_spec_default(home, &canonical).await
             };
@@ -198,9 +178,8 @@ async fn retire_superseded(home: &Path, index: &Index, yes: bool) -> (Vec<String
             if !removed.insert(old.clone()) {
                 continue;
             }
-            if old == "vim" {
-                preserve_vim_mode(home);
-            }
+            let old_enabled = lock.plugins.get(&old).map(|e| e.enabled).unwrap_or(true);
+            gray_pkg::ops::migrate_retired_alias(&canonical, &old, old_enabled);
             match gray_pkg::ops::remove(&old) {
                 Ok(()) => {
                     let plugins_dir = home.join("plugins");
@@ -246,9 +225,9 @@ pub async fn sync_profile(
         }
         let spec = gray_pkg::ops::canonical_name(name);
         let res = if yes {
-            crate::plugin_cli::install_spec(home, spec, false, true).await
+            crate::plugin_cli::install_spec(home, &spec, false, true, None).await
         } else {
-            crate::plugin_cli::install_spec_default(home, spec).await
+            crate::plugin_cli::install_spec_default(home, &spec).await
         };
         match res {
             Ok(()) => lines.push(format!("installed {spec}")),
@@ -305,7 +284,7 @@ pub(crate) async fn migrate_once() {
         }
         let _ = std::fs::write(&stamp, gray_core::time::now_secs().to_string());
         let spec = gray_pkg::ops::canonical_name(name);
-        match crate::plugin_cli::install_spec_default(&home, spec).await {
+        match crate::plugin_cli::install_spec_default(&home, &spec).await {
             Ok(()) => {
                 let _ = std::fs::remove_file(&stamp);
             }
@@ -356,6 +335,7 @@ mod tests {
             supersedes: vec!["skills".into()],
             superseded_by: Vec::new(),
             providers: Vec::new(),
+            parts: Vec::new(),
         }
     }
 
@@ -370,8 +350,8 @@ mod tests {
     }
 
     #[test]
-    fn default_profile_folds_skills_into_extras() {
-        assert!(FALLBACK_DEFAULT_PROFILE.contains(&"extras"));
+    fn default_profile_folds_skills_into_essentials() {
+        assert!(FALLBACK_DEFAULT_PROFILE.contains(&"essentials"));
         assert!(!FALLBACK_DEFAULT_PROFILE.contains(&"skills"));
     }
 
@@ -405,11 +385,11 @@ mod tests {
             profiles: std::collections::BTreeMap::new(),
             plugins: std::collections::BTreeMap::new(),
         };
-        let mut extras = entry("0.4.0");
-        extras.supersedes = vec!["secrets".into(), "skills".into()];
-        idx.plugins.insert("extras".into(), extras);
+        let mut essentials = entry("0.4.0");
+        essentials.supersedes = vec!["secrets".into(), "skills".into()];
+        idx.plugins.insert("essentials".into(), essentials);
 
-        // Without extras installed, legacy plugins must never retire each other.
+        // Without essentials installed, legacy plugins must never retire each other.
         let mut legacy_only = LockFile::default();
         legacy_only.plugins.insert(
             "skills".into(),
@@ -421,17 +401,17 @@ mod tests {
         );
         assert!(plan_superseded_retirements(&legacy_only, &idx).is_empty());
 
-        // With stale extras installed, plan upgrades extras before retiring legacy entries.
-        let mut with_stale_extras = legacy_only;
-        with_stale_extras.plugins.insert(
-            "extras".into(),
+        // With stale essentials installed, plan upgrades it before retiring legacy entries.
+        let mut with_stale = legacy_only;
+        with_stale.plugins.insert(
+            "essentials".into(),
             lock_entry("0.3.0", "https://example.invalid/extras-0.3.0.tar.gz"),
         );
-        let plan = plan_superseded_retirements(&with_stale_extras, &idx);
+        let plan = plan_superseded_retirements(&with_stale, &idx);
         assert_eq!(
             plan,
             vec![(
-                "extras".to_string(),
+                "essentials".to_string(),
                 true,
                 vec!["secrets".to_string(), "skills".to_string()]
             )]

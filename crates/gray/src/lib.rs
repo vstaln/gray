@@ -1009,6 +1009,19 @@ pub enum PluginCmd {
 
         #[arg(short = 'y', long, help = "Skip the capability/trust prompt")]
         yes: bool,
+
+        #[arg(
+            long,
+            value_name = "A,B",
+            help = "Turn exactly these parts of a bundle on; every other part off"
+        )]
+        parts: Option<String>,
+    },
+
+    #[command(about = "List the parts of an installed bundle plugin")]
+    Parts {
+        #[arg(value_name = "BUNDLE")]
+        bundle: String,
     },
 
     #[command(about = "Remove an installed plugin")]

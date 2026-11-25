@@ -134,7 +134,7 @@ fn registry_completion_covers_aliases() {
             .any(|(n, _)| n == "plugins")
     );
     let plugin_all = super::complete_command_args("plugin", "", cwd);
-    assert_eq!(plugin_all.len(), 8);
+    assert_eq!(plugin_all.len(), 9);
     assert_eq!(plugin_all[0].0, "plugin");
 }
 

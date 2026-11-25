@@ -165,25 +165,26 @@ impl ProviderRegistry {
                 .find(InstalledProvider::is_bundled_chatgpt_plan);
         }
         let (plug, rest) = provider_id.split_once(':')?;
-        let alt = gray_pkg::ops::RENAMED.iter().find_map(|&(o, n)| {
-            if o == plug {
-                Some(n)
-            } else if n == plug {
-                Some(o)
-            } else {
-                None
+        let candidates: Vec<String> = if let Some(canon) = gray_pkg::ops::renamed_to(plug) {
+            vec![canon]
+        } else {
+            gray_pkg::ops::aliases_of(plug)
+        };
+        for alt in candidates {
+            let alt_pid = format!("{alt}:{rest}");
+            let alt_auth = auth_ref
+                .strip_prefix(&format!("plugin:{plug}:"))
+                .map(|tail| format!("plugin:{alt}:{tail}"));
+            if let Some(hit) = all.iter().find(|installed| {
+                installed.provider_id() == alt_pid
+                    && alt_auth
+                        .as_deref()
+                        .is_none_or(|a| installed.auth_ref() == a)
+            }) {
+                return Some(hit.clone());
             }
-        })?;
-        let alt_pid = format!("{alt}:{rest}");
-        let alt_auth = auth_ref
-            .strip_prefix(&format!("plugin:{plug}:"))
-            .map(|tail| format!("plugin:{alt}:{tail}"));
-        all.into_iter().find(|installed| {
-            installed.provider_id() == alt_pid
-                && alt_auth
-                    .as_deref()
-                    .is_none_or(|a| installed.auth_ref() == a)
-        })
+        }
+        None
     }
 }
 
