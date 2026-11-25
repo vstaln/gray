@@ -306,7 +306,8 @@ async fn install_index(
     match entry.kind.as_str() {
         "" | "plugin" => {}
         "skill" => {
-            anyhow::bail!("'{name}' is a skill — `gray plugin install extras` adds skill support")
+            let owner = canonical_name("skills");
+            anyhow::bail!("'{name}' is a skill — `gray plugin install {owner}` adds skill support")
         }
         other => {
             anyhow::bail!("package '{name}' is kind '{other}' — not installable yet")
