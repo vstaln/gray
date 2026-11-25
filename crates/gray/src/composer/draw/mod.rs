@@ -64,9 +64,10 @@ pub(crate) fn attachment_cells(attachments: &[std::path::PathBuf], text: &str) -
 /// row above the box, and a panel that cannot fit at least one row is hidden
 /// rather than drawn over the box.
 pub(crate) fn popup_rows(matches: usize, room: u16) -> usize {
-    matches
-        .min(PANEL_ROWS)
-        .min(usize::from(room.saturating_sub(1)))
+    if matches == 0 {
+        return 0;
+    }
+    PANEL_ROWS.min(usize::from(room.saturating_sub(1)))
 }
 
 pub(crate) fn viewport_cap(rows: u16) -> u16 {
@@ -828,6 +829,11 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 box_y.saturating_sub(pop_h).max(area.y)
             };
             let rect = Rect::new(pop_x, pop_y, pop_w, pop_h);
+            let rows_y = if home_drop {
+                pop_y
+            } else {
+                pop_y + (visible_count - (end - start)) as u16
+            };
             if home_drop {
                 // Blank the home rows the dropdown covers, edge to edge, so
                 // no half-hidden model/hint text pokes out beside it.
@@ -864,7 +870,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 .skip(start)
                 .take(visible_count)
             {
-                let item_y = pop_y + (i - start) as u16;
+                let item_y = rows_y + (i - start) as u16;
                 let is_sel = i == tui.sel;
                 let cmd_str = format!(" /{name} ");
                 let desc_str = format!(" {desc} ");

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.32] - 2026-11-25
+
+### Fixed
+- **Slash completion menu keeps a fixed height.** The menu above the input stays six rows tall while it is open, with matches next to the input, so the input no longer jumps as you type and the match count changes.
+
 ## [0.2.31] - 2026-11-25
 
 ### Fixed
