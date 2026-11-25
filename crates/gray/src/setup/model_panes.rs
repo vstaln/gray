@@ -1798,10 +1798,7 @@ pub(crate) fn run_model_panes(
                             (config.model.as_deref() == Some(id)).then_some(&config.model_parts);
                         slot_parts = shape.settle_parts(seed);
                         let levels = row_levels(id, toggles.fast, &slot_parts);
-                        if !slot_effort
-                            .as_deref()
-                            .is_some_and(|e| levels.iter().any(|l| *l == e))
-                        {
+                        if !slot_effort.as_deref().is_some_and(|e| levels.contains(&e)) {
                             slot_effort = levels.first().map(|s| (*s).to_string());
                         }
                     }

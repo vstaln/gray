@@ -846,6 +846,7 @@ impl Logins {
         self.plugins.get(plugin).map(|s| s.argv.clone())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn lines(
         &self,
         name: &str,
