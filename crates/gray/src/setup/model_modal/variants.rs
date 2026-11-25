@@ -167,9 +167,13 @@ pub(super) fn variant_owner(
     if known.iter().any(|(id, _)| id == wire) {
         return None;
     }
+    let alt = wire.replace('+', "--");
     known.iter().find_map(|(id, _)| {
         let shape = super::super::variants::row_shape(id)?;
-        let v = shape.variants.iter().find(|v| v.id == wire)?;
+        let v = shape
+            .variants
+            .iter()
+            .find(|v| v.id == wire || v.id == alt)?;
         Some((
             id.clone(),
             ModelVariantRef {
