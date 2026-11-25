@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.2.30] - 2026-11-25
+
+### Added
+- **Switchable bundle parts (`gray plugin parts`, `--parts`, `/plugins`).** Bundles expose toggleable parts in `$GRAY_HOME/plugins/parts.json`, with interactive part toggling in `/plugins`, `gray plugin enable|disable <bundle>/<part>`, and `gray plugin install <bundle> --parts a,b`.
+
+### Changed
+- **Index-driven plugin retirement and migration.** Retired standalone plugin names resolve dynamically from the live index, preserving previous enabled/disabled state, settings, and completions across bundle migrations.
+- **Bundle-part CLI alias routing.** Running `gray <old-name>` forwards to the owning bundle with the part name prepended, and `gray update --everything` resolves its target command dynamically.
+
 ## [0.2.29] - 2026-11-23
 
 ### Added
