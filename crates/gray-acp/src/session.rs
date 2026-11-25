@@ -78,6 +78,16 @@ pub trait Driver: Send + Sync {
         let _ = (stage, model, outcome);
         false
     }
+    fn on_commands(&self, commands: &[SlashCommand]) {
+        let _ = commands;
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SlashCommand {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 pub enum PermissionDecision {
@@ -110,6 +120,7 @@ pub struct Session {
 
 pub struct Pool {
     sessions: Mutex<HashMap<String, Session>>,
+    commands: Mutex<Vec<SlashCommand>>,
     driver: Arc<dyn Driver>,
 }
 
@@ -117,6 +128,7 @@ impl Pool {
     pub fn new(driver: Arc<dyn Driver>) -> Arc<Self> {
         let pool = Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
+            commands: Mutex::new(Vec::new()),
             driver,
         });
         let p = pool.clone();
@@ -137,6 +149,10 @@ impl Pool {
             })
             .ok();
         pool
+    }
+
+    pub fn commands(&self) -> Vec<SlashCommand> {
+        self.commands.lock().map(|c| c.clone()).unwrap_or_default()
     }
 }
 
@@ -215,7 +231,7 @@ pub fn run_turn(pool: &Arc<Pool>, raw: &[u8], cancel: &AtomicBool) -> Result<Vec
     prep.tail = tail;
     chat::split_tail_with(&mut prep, session.images);
 
-    let result = drive(session, &*pool.driver, &mut prep, cancel, fresh);
+    let result = drive(session, pool, &mut prep, cancel, fresh);
     let discard = pool.driver.turn_outcome(
         session._stage.path(),
         &prep.model,
@@ -364,13 +380,13 @@ fn normalize_schema(schema: &mut Value) {
 
 fn drive(
     session: &mut Session,
-    driver: &dyn Driver,
+    pool: &Pool,
     prep: &mut PreparedTurn,
     cancel: &AtomicBool,
     fresh: bool,
 ) -> Result<TurnResult, String> {
     let mut turn_guard = TurnGuard::default();
-    let mut r = drive_inner(session, driver, prep, cancel, fresh, &mut turn_guard)?;
+    let mut r = drive_inner(session, pool, prep, cancel, fresh, &mut turn_guard)?;
     guard::clean_items(&mut r.items);
     if !session.mid_turn {
         let (call_ids, text) = chat::reply_signature(&r);
@@ -382,12 +398,13 @@ fn drive(
 
 fn drive_inner(
     session: &mut Session,
-    driver: &dyn Driver,
+    pool: &Pool,
     prep: &mut PreparedTurn,
     cancel: &AtomicBool,
     fresh: bool,
     turn_guard: &mut TurnGuard,
 ) -> Result<TurnResult, String> {
+    let driver = &*pool.driver;
     let mut result = TurnResult {
         stop_reason: "end_turn".to_string(),
         ..Default::default()
@@ -613,11 +630,11 @@ fn drive_inner(
                 if method == "session/update" {
                     let cut = handle_update(
                         &params,
+                        pool,
                         &mut result,
                         &mut text_acc,
                         &mut thought_acc,
                         &flush_text,
-                        &flush_thought,
                         turn_guard,
                     );
                     if let Some(m) = cut {
@@ -730,11 +747,11 @@ fn handle_agent_request(
 
 fn handle_update(
     params: &Value,
+    pool: &Pool,
     result: &mut TurnResult,
     text_acc: &mut String,
     thought_acc: &mut String,
     flush_text: &dyn Fn(&mut TurnResult, &mut String),
-    _flush_thought: &dyn Fn(&mut TurnResult, &mut String),
     turn_guard: &mut TurnGuard,
 ) -> Option<&'static str> {
     let update = params.get("update")?;
@@ -742,7 +759,7 @@ fn handle_update(
         .get("sessionUpdate")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if turn_guard.cut().is_some() && kind != "usage_update" {
+    if turn_guard.cut().is_some() && !matches!(kind, "usage_update" | "available_commands_update") {
         return None;
     }
     match kind {
@@ -774,8 +791,34 @@ fn handle_update(
                 result.usage = Some(usage);
             }
         }
+        "available_commands_update" => {
+            if let Some(arr) = update.get("availableCommands").and_then(Value::as_array) {
+                let cmds: Vec<SlashCommand> = arr
+                    .iter()
+                    .filter_map(|v| {
+                        let name = v.get("name").and_then(Value::as_str)?.trim();
+                        if name.is_empty() {
+                            return None;
+                        }
+                        let description = v
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        Some(SlashCommand {
+                            name: name.to_string(),
+                            description,
+                        })
+                    })
+                    .collect();
+                if let Ok(mut guard) = pool.commands.lock() {
+                    *guard = cmds.clone();
+                }
+                pool.driver.on_commands(&cmds);
+            }
+        }
         "plan"
-        | "available_commands_update"
         | "current_mode_update"
         | "config_option_update"
         | "session_info_update"
