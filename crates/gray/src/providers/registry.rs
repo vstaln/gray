@@ -165,15 +165,8 @@ impl ProviderRegistry {
                 .find(InstalledProvider::is_bundled_chatgpt_plan);
         }
         let (plug, rest) = provider_id.split_once(':')?;
-        let alt = gray_pkg::ops::RENAMED.iter().find_map(|&(o, n)| {
-            if o == plug {
-                Some(n)
-            } else if n == plug {
-                Some(o)
-            } else {
-                None
-            }
-        })?;
+        let alt = gray_pkg::ops::renamed_to(plug)
+            .or_else(|| gray_pkg::ops::aliases_of(plug).into_iter().next())?;
         let alt_pid = format!("{alt}:{rest}");
         let alt_auth = auth_ref
             .strip_prefix(&format!("plugin:{plug}:"))

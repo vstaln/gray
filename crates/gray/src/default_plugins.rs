@@ -356,6 +356,7 @@ mod tests {
             supersedes: vec!["skills".into()],
             superseded_by: Vec::new(),
             providers: Vec::new(),
+            parts: Vec::new(),
         }
     }
 

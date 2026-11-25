@@ -397,6 +397,26 @@ pub fn toggle_managed(target: &str, on: bool) -> anyhow::Result<String> {
             return Ok(disabled_bundle_note(&lock, &bundle, line));
         }
     }
+    if lock.plugins.contains_key(target) {
+        gray_pkg::ops::set_enabled(target, on)?;
+        return Ok(format!(
+            "{} {target}",
+            if on { "enabled" } else { "disabled" }
+        ));
+    }
+    if let Some((bundle, _)) = gray_pkg::ops::alias_parts(target) {
+        let installed = lock.plugins.contains_key(bundle);
+        anyhow::ensure!(
+            installed,
+            "{}",
+            not_installed_message(&home, gray_pkg::ops::canonical_name(target))
+        );
+        return Err(anyhow::anyhow!("{}", multi_part_note(target, bundle, true)));
+    }
+    if let Some((bundle, part)) = gray_pkg::ops::part_of(target) {
+        let line = toggle_part(&home, bundle, part, on)?;
+        return Ok(disabled_bundle_note(&lock, bundle, line));
+    }
     let target = installed_name(&lock, target);
     if lock.plugins.contains_key(&target) {
         gray_pkg::ops::set_enabled(&target, on)?;
@@ -404,22 +424,6 @@ pub fn toggle_managed(target: &str, on: bool) -> anyhow::Result<String> {
             "{} {target}",
             if on { "enabled" } else { "disabled" }
         ));
-    }
-    if let Some((bundle, _)) = gray_pkg::ops::alias_parts(&target) {
-        let installed = lock.plugins.contains_key(bundle);
-        anyhow::ensure!(
-            installed,
-            "{}",
-            not_installed_message(&home, gray_pkg::ops::canonical_name(&target))
-        );
-        return Err(anyhow::anyhow!(
-            "{}",
-            multi_part_note(&target, bundle, true)
-        ));
-    }
-    if let Some((bundle, part)) = gray_pkg::ops::part_of(&target) {
-        let line = toggle_part(&home, bundle, part, on)?;
-        return Ok(disabled_bundle_note(&lock, bundle, line));
     }
     Err(anyhow::anyhow!("{}", not_installed_message(&home, &target)))
 }
@@ -562,6 +566,7 @@ async fn install_spec_gated(
     gate: TrustGate,
     parts: Option<Vec<String>>,
 ) -> anyhow::Result<Vec<String>> {
+    gray_pkg::index::ensure_cached().await;
     let before: BTreeSet<String> = load_lock(home)
         .map(|l| l.plugins.into_keys().collect())
         .unwrap_or_default();
@@ -1314,14 +1319,15 @@ fn resolve_update_target<'a>(home: &Path, target: &'a str) -> &'a str {
     if lock.plugins.contains_key(target) {
         return target;
     }
-    gray_pkg::ops::RENAMED
-        .iter()
-        .find(|(old, new)| *new == target && lock.plugins.contains_key(*old))
-        .map_or(target, |(old, _)| *old)
+    gray_pkg::ops::aliases_of(target)
+        .into_iter()
+        .find(|old| lock.plugins.contains_key(*old))
+        .unwrap_or(target)
 }
 
 pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
     let home = home()?;
+    gray_pkg::index::ensure_cached().await;
     let target = resolve_update_target(&home, target);
     ensure_installed(&home, target)?;
     let mut reports = gray_pkg::ops::update(target).await?;
