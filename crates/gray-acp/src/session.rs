@@ -108,6 +108,7 @@ pub struct Session {
     reply_text: String,
     parked: HashMap<String, Parked>,
     mid_turn: bool,
+    prompt_rx: Option<std::sync::mpsc::Receiver<Value>>,
     model: String,
     dead: bool,
     prompt_seq: u64,
@@ -321,6 +322,7 @@ fn spawn_session(driver: &dyn Driver, prep: &PreparedTurn) -> Result<Session, St
         reply_text: String::new(),
         parked: HashMap::new(),
         mid_turn: false,
+        prompt_rx: None,
         model: prep.model.clone(),
         dead: false,
         prompt_seq: 0,
@@ -409,7 +411,7 @@ fn drive_inner(
         stop_reason: "end_turn".to_string(),
         ..Default::default()
     };
-    let mut prompt_rx: Option<std::sync::mpsc::Receiver<Value>> = None;
+    let mut prompt_rx = session.prompt_rx.take();
     let mut queued_prompt: Vec<Value> = Vec::new();
 
     if session.mid_turn {
@@ -543,6 +545,8 @@ fn drive_inner(
                     flush_text(&mut result, &mut text_acc);
                     flush_thought(&mut result, &mut thought_acc);
                     result.suspended = true;
+                    session.prompt_rx = prompt_rx.take();
+                    session.absorbed = prep.input.clone();
                     session.last_used = Instant::now();
                     return Ok(result);
                 }
@@ -778,10 +782,8 @@ fn handle_update(
             }
         }
         "tool_call" | "tool_call_update" => {
-            let title = update.get("title").and_then(Value::as_str).unwrap_or("");
-            if kind == "tool_call" && !title.is_empty() {
+            if kind == "tool_call" {
                 flush_text(result, text_acc);
-                thought_acc.push_str(&format!("[tool: {title}]\n"));
             }
         }
         "usage_update" => {
@@ -834,4 +836,100 @@ fn content_text(content: Option<&Value>) -> Option<String> {
         return c.get("text").and_then(Value::as_str).map(str::to_string);
     }
     None
+}
+
+pub fn format_commands(slash: &str, commands: &[SlashCommand]) -> String {
+    if commands.is_empty() {
+        return format!("no ACP commands discovered yet for {slash}");
+    }
+    let mut lines = vec![format!(
+        "ACP commands (run as `{slash} <command> [args…]`):"
+    )];
+    for c in commands {
+        if c.description.is_empty() {
+            lines.push(format!("  {slash} {}", c.name));
+        } else {
+            lines.push(format!("  {slash} {:<20} {}", c.name, c.description));
+        }
+    }
+    lines.join("\n")
+}
+
+fn strip_slash_prefix<'a>(raw: &'a str, slash: &str) -> Option<&'a str> {
+    let trimmed = raw.trim_start();
+    let bare = slash.trim_start_matches('/');
+    let rest = trimmed
+        .strip_prefix(slash)
+        .or_else(|| trimmed.strip_prefix(bare))?;
+    let next = rest.chars().next()?;
+    if !next.is_whitespace() {
+        return None;
+    }
+    let body = rest.trim_start();
+    (!body.is_empty()).then_some(body)
+}
+
+pub fn dispatch_slash_command(
+    slash: &str,
+    provider_id: &str,
+    params: &Value,
+    commands: &[SlashCommand],
+) -> Option<Value> {
+    let argv: Vec<String> = params
+        .get("argv")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let first = argv.first()?.as_str();
+    if first == "commands" {
+        return Some(json!({"text": format_commands(slash, commands)}));
+    }
+    let cmd = first.trim_start_matches('/');
+    if !commands.iter().any(|c| c.name == cmd) {
+        return None;
+    }
+    let active_provider = params
+        .pointer("/session/model/provider_id")
+        .and_then(Value::as_str);
+    if active_provider.is_some_and(|p| {
+        p != provider_id && p.rsplit_once(':').map(|(_, id)| id) != Some(provider_id)
+    }) {
+        return Some(json!({
+            "text": format!("switch to {provider_id} first (`{slash}`) to run /{cmd}"),
+        }));
+    }
+    let raw = params.get("raw").and_then(Value::as_str);
+    let prompt = match raw.and_then(|r| strip_slash_prefix(r, slash)) {
+        Some(body) if body.starts_with('/') => body.to_string(),
+        Some(body) => format!("/{body}"),
+        None if argv.len() > 1 => format!("/{cmd} {}", argv[1..].join(" ")),
+        None => format!("/{cmd}"),
+    };
+    Some(json!({"prompt": prompt}))
+}
+
+pub fn load_cached_commands(path: &std::path::Path) -> Vec<SlashCommand> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Vec<SlashCommand>>(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_cached_commands(path: &std::path::Path, commands: &[SlashCommand]) {
+    if commands.is_empty() {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(bytes) = serde_json::to_vec(commands) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
 }
