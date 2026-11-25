@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.31] - 2026-11-25
+
+### Fixed
+- **Plugin `host/run` children are hidden workers.** Children spawned for plugins (such as context compaction summaries) now set `GRAY_HIDDEN_WORKER=1`, so they no longer show up as subagents or live sessions.
+
 ## [0.2.30] - 2026-11-25
 
 ### Added

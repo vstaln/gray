@@ -22,6 +22,7 @@ pub async fn run_prompt_child(cwd: &Path, prompt: &str) -> Value {
     let mut child = match tokio::process::Command::new(exe)
         .arg("-p")
         .arg(prompt)
+        .env("GRAY_HIDDEN_WORKER", "1")
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
