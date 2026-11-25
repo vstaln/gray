@@ -935,6 +935,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gray-acp"
+version = "0.2.32"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "gray-core"
 version = "0.2.32"
 dependencies = [
