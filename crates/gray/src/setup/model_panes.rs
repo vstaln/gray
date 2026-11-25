@@ -39,6 +39,7 @@ enum Focus {
     Rail,
     Models,
     Logins,
+    Slots,
 }
 
 #[derive(Default)]
@@ -55,7 +56,7 @@ enum Job {
 }
 
 const PORTAL_URL: &str = "https://gray.alignment.id/account";
-const PTY_EXTRA: u16 = 10;
+const MODAL_MAX_H: u16 = 34;
 
 fn installed_of(rail: &[PaneProvider]) -> impl Iterator<Item = &InstalledProvider> {
     rail.iter().filter_map(|p| p.installed.as_ref())
@@ -76,13 +77,13 @@ struct Geo {
     detail_y: u16,
 }
 
-fn modal_h(term_h: u16, extra: u16) -> u16 {
-    term_h.clamp(10, 24 + extra).min(term_h.saturating_sub(2))
+fn modal_h(term_h: u16) -> u16 {
+    term_h.clamp(10, MODAL_MAX_H).min(term_h.saturating_sub(2))
 }
 
-fn geo(area: Rect, extra: u16) -> Geo {
+fn geo(area: Rect) -> Geo {
     let w = area.width.clamp(48, 84).min(area.width.saturating_sub(4));
-    let h = modal_h(area.height, extra);
+    let h = modal_h(area.height);
     let outer = Rect::new((area.width - w) / 2, (area.height - h) / 2, w, h);
     let inner = Rect::new(outer.x + 1, outer.y + 1, w - 2, h - 2);
     let rail_w = RAIL_W.min(inner.width / 3).max(14);
@@ -700,6 +701,37 @@ fn commit_pick(
     save_saved_config_at(&path, &saved)
 }
 
+fn commit_composite_pick(
+    config: &mut Config,
+    p: &PaneProvider,
+    keys: &BTreeMap<String, String>,
+    model: &str,
+    parts: &Parts,
+    effort: Option<&str>,
+    toggles: PickerToggles,
+) -> anyhow::Result<()> {
+    match &p.installed {
+        Some(installed) => activate_plugin_connection(config, installed, model)?,
+        None => *config = scoped_config(config, p, keys),
+    }
+    config.model = Some(model.to_string());
+    config.model_parts = parts.clone();
+    let path = saved_config_path()?;
+    let _lock = lock_saved_config_at(&path)?;
+    let mut saved = load_saved_config_at(&path);
+    if p.installed.is_none() {
+        save_key_connection(config, &mut saved);
+    }
+    saved.model = config.model.clone();
+    let mem_key = crate::setup::effort_memory_key(&config.provider_id, &config.base_url, model);
+    saved.remember_parts(&mem_key, parts);
+    commit_row_effort(config, &mut saved, effort, effort.is_some());
+    toggles.commit(config, &mut saved);
+    crate::config::export_provider_env(config);
+    save_saved_config_at(&path, &saved)
+}
+
+#[allow(dead_code)]
 fn delegate_pick(
     terminal: &mut super::ModalTerminal,
     config: &mut Config,
@@ -760,7 +792,9 @@ struct PaneView<'a> {
     portal: Option<&'a PortalBox>,
     portal_in: bool,
     adding: bool,
-    extra: u16,
+    slot_sel: usize,
+    slot_parts: &'a Parts,
+    slot_effort: Option<&'a str>,
 }
 
 impl PaneView<'_> {
@@ -830,7 +864,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     let fg = |c: Color| Style::default().fg(c);
     let bold = |c: Color| fg(c).add_modifier(Modifier::BOLD);
     let fill = |c: Color| Style::default().bg(c);
-    let g = geo(area, v.extra);
+    let g = geo(area);
     let (outer, inner, rail_w, detail_y) = (g.outer, g.inner, g.rail_w, g.detail_y);
     frame.render_widget(Clear, outer);
     frame.render_widget(Paragraph::new("").style(fill(t.raised_bg)), outer);
@@ -838,12 +872,19 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     let list_y = g.pane.y;
     let pane_x = g.pane.x;
     let pane_w = g.pane.width;
-    let strip_h = strip_rows(list_h, v.strip_lines.len());
-    let model_y = list_y + strip_h as u16;
-    let model_h = list_h - strip_h;
     let row = |x: u16, y: u16, w: u16| Rect::new(x, y, w, 1);
     let provider = v.provider();
     let highlighted = v.highlighted();
+    let comp_shape = highlighted
+        .and_then(|(id, _)| super::variants::row_shape(id).filter(|sh| sh.is_composite()));
+    let slot_bar_h = comp_shape
+        .as_ref()
+        .map(|sh| sh.slots.len() + 1)
+        .unwrap_or(0)
+        .min(list_h / 2);
+    let strip_h = strip_rows(list_h.saturating_sub(slot_bar_h), v.strip_lines.len());
+    let model_y = list_y + strip_h as u16;
+    let model_h = list_h.saturating_sub(strip_h + slot_bar_h);
 
     let filter = if v.filter.is_empty() {
         vec![Span::styled("type to filter ", fg(t.text_faint))]
@@ -1152,6 +1193,86 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
                 row(pane_x, model_y + (m - v.model_top) as u16, pane_w),
             );
         }
+        if let (Some((cid, _)), Some(shape)) = (highlighted, comp_shape.as_ref())
+            && slot_bar_h > 1
+        {
+            let bar_y = model_y + model_h as u16;
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "─".repeat(pane_w.saturating_sub(1) as usize),
+                    fg(t.bezel_lo),
+                )),
+                row(pane_x, bar_y, pane_w),
+            );
+            let levels = row_levels(cid, v.toggles.fast, v.slot_parts);
+            let cur_eff = levels
+                .iter()
+                .copied()
+                .find(|&l| Some(l) == v.slot_effort)
+                .or_else(|| levels.first().copied());
+            let opt_w = shape
+                .slots
+                .iter()
+                .flat_map(|s| &s.options)
+                .map(|o| o.name.chars().count())
+                .max()
+                .unwrap_or(10)
+                .clamp(10, 20);
+            for (si, slot) in shape.slots.iter().enumerate().take(slot_bar_h - 1) {
+                let active_row = v.focus == Focus::Slots && si == v.slot_sel;
+                let picked_id = v.slot_parts.get(&slot.key).map(String::as_str);
+                let opt_idx = picked_id
+                    .and_then(|oid| slot.options.iter().position(|o| o.id == oid))
+                    .unwrap_or(0);
+                let opt_name = slot
+                    .options
+                    .get(opt_idx)
+                    .map(|o| o.name.as_str())
+                    .unwrap_or("—");
+                let padded_opt = format!("{:<width$}", fit_chars(opt_name, opt_w), width = opt_w);
+                let total_opts = slot.options.len().max(1);
+                let mut spans = vec![
+                    Span::styled(
+                        if active_row { " ▸ " } else { "   " },
+                        fg(if active_row { t.accent } else { t.text_dim }),
+                    ),
+                    Span::styled(
+                        format!("{:<10}", fit_chars(&slot.label, 10)),
+                        if active_row {
+                            bold(t.text_bright)
+                        } else {
+                            fg(t.text_dim)
+                        },
+                    ),
+                ];
+                if active_row {
+                    spans.push(Span::styled("◀ ", fg(t.accent)));
+                    spans.push(Span::styled(padded_opt, bold(t.accent)));
+                    spans.push(Span::styled(" ▶", fg(t.accent)));
+                } else {
+                    spans.push(Span::styled(format!("  {padded_opt}  "), fg(t.text_body)));
+                }
+                spans.push(Span::styled(
+                    format!("  {} of {}", opt_idx + 1, total_opts),
+                    fg(t.text_faint),
+                ));
+                if si == 0
+                    && let Some(eff) = cur_eff
+                    && levels.len() > 1
+                {
+                    let meter = meter_spans(&levels, eff, false);
+                    let used: usize = spans.iter().map(Span::width).sum();
+                    let meter_w: usize = meter.iter().map(Span::width).sum();
+                    let pad = (pane_w as usize).saturating_sub(used + meter_w).max(2);
+                    spans.push(Span::raw(" ".repeat(pad)));
+                    spans.extend(meter);
+                }
+                frame.render_widget(
+                    Paragraph::new(Line::from(spans)),
+                    row(pane_x, bar_y + 1 + si as u16, pane_w),
+                );
+            }
+        }
     }
 
     let dim = |s: String| Span::styled(s, fg(t.text_dim));
@@ -1174,7 +1295,11 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
             detail.push(dim("not installed — enter to install".into()))
         }
         _ if !v.adoptable => detail.push(dim("enter to sign in".into())),
-        Some((id, _)) if is_composite(id) => detail.push(dim("enter picks its slots".into())),
+        Some((id, _)) if is_composite(id) => detail.push(dim(if v.focus == Focus::Slots {
+            "←→ change slot · tab effort · enter select".into()
+        } else {
+            "enter edits slots · ←→ quick-cycle".into()
+        })),
         Some((id, _)) => {
             let mut parts: Vec<Vec<Span>> = Vec::new();
             if let Some(c) = known_context(id) {
@@ -1226,7 +1351,7 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         (false, _) if provider.is_some_and(|p| p.install.is_some()) => "install",
         (false, _) => "sign in",
         (true, Focus::Rail) => "open",
-        (true, Focus::Models | Focus::Logins) => "select",
+        (true, Focus::Models | Focus::Logins | Focus::Slots) => "select",
     };
     let has_strip = v.strip_live;
     let portal_row = provider.is_some_and(|p| p.item.id == catalog::GRAY_PORTAL_ID);
@@ -1242,6 +1367,14 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
         vec![("enter", "add login", true), ("esc", "cancel", true)]
     } else if v.confirm_remove {
         vec![("enter", "remove", true), ("esc", "cancel", true)]
+    } else if v.focus == Focus::Slots {
+        vec![
+            ("↑↓", "slot", true),
+            ("←→", "model", true),
+            ("tab", "effort", true),
+            ("enter", "select", true),
+            ("esc", "back", true),
+        ]
     } else if v.focus == Focus::Logins {
         let mut keys = vec![
             ("↑↓", "move", true),
@@ -1300,8 +1433,8 @@ fn list_rows(inner_h: u16) -> usize {
     inner_h.saturating_sub(if roomy(inner_h) { 6 } else { 5 }) as usize
 }
 
-fn list_height(term_h: u16, extra: u16) -> usize {
-    list_rows(modal_h(term_h, extra).saturating_sub(2))
+fn list_height(term_h: u16) -> usize {
+    list_rows(modal_h(term_h).saturating_sub(2))
 }
 
 fn clamp_sel(sel: usize, len: usize) -> usize {
@@ -1364,6 +1497,11 @@ pub(crate) fn run_model_panes(
     let mut logins = super::logins::Logins::new();
     logins.start(installed_of(&rail));
     let mut strip_sel = 0usize;
+    let mut strip_top = 0usize;
+    let mut slot_sel: usize = 0;
+    let mut slot_model: Option<String> = None;
+    let mut slot_parts: Parts = config.model_parts.clone();
+    let mut slot_effort: Option<String> = None;
     let mut adding: Option<String> = None;
     let mut confirm_login: Option<String> = None;
     let mut confirm_logout = false;
@@ -1577,23 +1715,30 @@ pub(crate) fn run_model_panes(
                     }
                 }
             }
-            let pane_w = geo(term_area, 0).pane.width as usize;
+            let pane_w = geo(term_area).pane.width as usize;
             let (strip_lines, strip_live) = match pane_section(
                 provider,
                 strip.as_ref(),
                 pty.is_some() || portal.is_some(),
                 portal_in && portal_who.is_some(),
             ) {
-                PaneSection::Logins(st) => (
-                    logins.lines(
-                        provider.map_or("", |p| p.item.name.as_str()),
-                        st,
-                        (focus == Focus::Logins).then_some(strip_sel),
-                        adding.as_deref(),
-                        pane_w,
-                    ),
-                    true,
-                ),
+                PaneSection::Logins(st) => {
+                    let max_list = list_height(term.height);
+                    let max_body = max_list.saturating_sub(10).clamp(5, 8);
+                    (
+                        logins.lines(
+                            provider.map_or("", |p| p.item.name.as_str()),
+                            st,
+                            (focus == Focus::Logins).then_some(strip_sel),
+                            strip_sel,
+                            &mut strip_top,
+                            max_body,
+                            adding.as_deref(),
+                            pane_w,
+                        ),
+                        true,
+                    )
+                }
                 PaneSection::Portal => (
                     super::logins::portal_section(
                         provider.map_or("Gray", |p| p.item.name.as_str()),
@@ -1604,15 +1749,8 @@ pub(crate) fn run_model_panes(
                 ),
                 PaneSection::None => (Vec::new(), false),
             };
-            let extra = if pty.is_some() {
-                PTY_EXTRA
-            } else if strip_lines.is_empty() {
-                0
-            } else {
-                strip_lines.len() as u16 + 1
-            };
             if let Some(pt) = pty.as_mut() {
-                let pane = geo(term_area, extra).pane;
+                let pane = geo(term_area).pane;
                 pt.tick(Rect::new(
                     pane.x + 1,
                     pane.y + 1,
@@ -1620,7 +1758,7 @@ pub(crate) fn run_model_panes(
                     pane.height.saturating_sub(2),
                 ));
             }
-            let list_h = list_height(term.height, extra);
+            let list_h = list_height(term.height);
             let model_h = list_h
                 .saturating_sub(strip_rows(list_h, strip_lines.len()))
                 .max(1);
@@ -1649,6 +1787,24 @@ pub(crate) fn run_model_panes(
             // highlight trailing behind the input.
             let backlog = !first_draw && poll(std::time::Duration::ZERO)?;
             if !backlog {
+                if let Some(id) = highlighted.as_deref()
+                    && let Some(shape) =
+                        super::variants::row_shape(id).filter(|sh| sh.is_composite())
+                {
+                    if slot_model.as_deref() != Some(id) {
+                        slot_model = Some(id.to_string());
+                        slot_sel = 0;
+                        let seed =
+                            (config.model.as_deref() == Some(id)).then_some(&config.model_parts);
+                        slot_parts = shape.settle_parts(seed);
+                        let levels = row_levels(id, toggles.fast, &slot_parts);
+                        if !slot_effort.as_deref().is_some_and(|e| levels.contains(&e)) {
+                            slot_effort = levels.first().map(|s| (*s).to_string());
+                        }
+                    }
+                } else if focus == Focus::Slots {
+                    focus = Focus::Models;
+                }
                 terminal.draw(|f| {
                     draw(
                         f,
@@ -1680,7 +1836,9 @@ pub(crate) fn run_model_panes(
                             portal: portal.as_ref(),
                             portal_in,
                             adding: adding.is_some(),
-                            extra,
+                            slot_sel,
+                            slot_parts: &slot_parts,
+                            slot_effort: slot_effort.as_deref(),
                         },
                     )
                 })?;
@@ -1761,7 +1919,7 @@ pub(crate) fn run_model_panes(
                         let Some(argv) = logins.has_cli(plugin) else {
                             continue;
                         };
-                        let pane = geo(term_area, PTY_EXTRA).pane;
+                        let pane = geo(term_area).pane;
                         let inner = Rect::new(
                             pane.x + 1,
                             pane.y + 1,
@@ -1832,7 +1990,7 @@ pub(crate) fn run_model_panes(
                         let Some(argv) = logins.has_cli(plugin) else {
                             continue;
                         };
-                        let pane = geo(term_area, PTY_EXTRA).pane;
+                        let pane = geo(term_area).pane;
                         let inner = Rect::new(
                             pane.x + 1,
                             pane.y + 1,
@@ -1883,6 +2041,72 @@ pub(crate) fn run_model_panes(
                     _ => {}
                 }
                 continue;
+            }
+            if focus == Focus::Slots {
+                if let (Some(p), Some(id)) = (provider, highlighted.as_deref())
+                    && let Some(shape) =
+                        super::variants::row_shape(id).filter(|sh| sh.is_composite())
+                {
+                    let n_slots = shape.slots.len().max(1);
+                    if let Some(up) = moving {
+                        slot_sel = if up {
+                            slot_sel.saturating_sub(1)
+                        } else {
+                            (slot_sel + 1).min(n_slots - 1)
+                        };
+                        continue;
+                    }
+                    match key.code {
+                        KeyCode::Esc => focus = Focus::Models,
+                        KeyCode::Left | KeyCode::Right => {
+                            if let Some(slot) = shape.slots.get(slot_sel)
+                                && !slot.options.is_empty()
+                            {
+                                let cur = slot_parts.get(&slot.key).map(String::as_str);
+                                let idx = cur
+                                    .and_then(|c| slot.options.iter().position(|o| o.id == c))
+                                    .unwrap_or(0);
+                                let next_idx = if key.code == KeyCode::Right {
+                                    (idx + 1) % slot.options.len()
+                                } else {
+                                    (idx + slot.options.len() - 1) % slot.options.len()
+                                };
+                                if let Some(next_parts) = shape.option_parts(
+                                    &slot_parts,
+                                    &slot.key,
+                                    &slot.options[next_idx].id,
+                                ) {
+                                    slot_parts = next_parts;
+                                }
+                            }
+                        }
+                        KeyCode::Tab => {
+                            let levels = row_levels(id, toggles.fast, &slot_parts);
+                            if !levels.is_empty() {
+                                let idx = slot_effort
+                                    .as_deref()
+                                    .and_then(|e| levels.iter().position(|l| *l == e))
+                                    .unwrap_or(0);
+                                slot_effort = Some(levels[(idx + 1) % levels.len()].to_string());
+                            }
+                        }
+                        KeyCode::Enter => {
+                            commit_composite_pick(
+                                config,
+                                p,
+                                &keys,
+                                id,
+                                &slot_parts,
+                                slot_effort.as_deref(),
+                                toggles,
+                            )?;
+                            return Ok(PanesOutcome::Picked);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                focus = Focus::Models;
             }
             if std::mem::take(&mut confirm_remove) {
                 do_remove = key.code == KeyCode::Enter;
@@ -1937,20 +2161,15 @@ pub(crate) fn run_model_panes(
                             return Ok(PanesOutcome::Connect(p.item.id.clone()));
                         }
                     }
-                    Focus::Rail | Focus::Logins => focus = Focus::Models,
+                    Focus::Rail | Focus::Logins | Focus::Slots => focus = Focus::Models,
                     Focus::Models => {
                         let (Some(p), Some(id)) = (provider, highlighted.as_deref()) else {
                             continue;
                         };
                         if is_composite(id) {
-                            return delegate_pick(
-                                &mut terminal,
-                                config,
-                                &bg_snapshot,
-                                p,
-                                &keys,
-                                id,
-                            );
+                            focus = Focus::Slots;
+                            slot_sel = 0;
+                            continue;
                         }
                         let stepped = efforts.was_stepped(p, id);
                         commit_pick(config, p, &keys, id, shown, stepped, toggles)?;
@@ -1967,8 +2186,36 @@ pub(crate) fn run_model_panes(
                 KeyCode::PageDown => model_sel = (model_sel + model_h).min(last_model),
                 KeyCode::Left | KeyCode::Right if focus == Focus::Models => {
                     let forward = key.code == KeyCode::Right;
-                    let moved = matches!((provider, highlighted.as_deref()), (Some(p), Some(id))
-                        if !is_composite(id) && efforts.step(&scoped, &saved, p, id, forward));
+                    let mut moved = false;
+                    if let (Some(p), Some(id)) = (provider, highlighted.as_deref()) {
+                        if let Some(shape) =
+                            super::variants::row_shape(id).filter(|sh| sh.is_composite())
+                        {
+                            if let Some(slot) = shape.slots.first()
+                                && !slot.options.is_empty()
+                            {
+                                let cur = slot_parts.get(&slot.key).map(String::as_str);
+                                let idx = cur
+                                    .and_then(|c| slot.options.iter().position(|o| o.id == c))
+                                    .unwrap_or(0);
+                                let next_idx = if forward {
+                                    (idx + 1) % slot.options.len()
+                                } else {
+                                    (idx + slot.options.len() - 1) % slot.options.len()
+                                };
+                                if let Some(next_parts) = shape.option_parts(
+                                    &slot_parts,
+                                    &slot.key,
+                                    &slot.options[next_idx].id,
+                                ) {
+                                    slot_parts = next_parts;
+                                    moved = true;
+                                }
+                            }
+                        } else {
+                            moved = efforts.step(&scoped, &saved, p, id, forward);
+                        }
+                    }
                     if !moved && !forward {
                         focus = Focus::Rail;
                     }
@@ -2003,7 +2250,7 @@ pub(crate) fn run_model_panes(
                 KeyCode::BackTab => {
                     focus = match focus {
                         Focus::Rail => Focus::Models,
-                        Focus::Models | Focus::Logins => Focus::Rail,
+                        Focus::Models | Focus::Logins | Focus::Slots => Focus::Rail,
                     };
                 }
                 KeyCode::Char('L')

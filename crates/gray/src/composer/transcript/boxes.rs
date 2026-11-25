@@ -528,7 +528,9 @@ impl Tui {
                             .any(|b| matches!(b, gray_core::ContentBlock::Text { .. }));
                     if !user_text.is_empty() || !attached.is_empty() || !media_stubs.is_empty() {
                         let (visible, notices) = super::split_synthetic_prompt(&user_text);
-                        if !visible.is_empty() || !attached.is_empty() {
+                        let show_prompt = !msg.injected
+                            || visible.starts_with(crate::session_send::SEND_FROM_PREFIX);
+                        if show_prompt && (!visible.is_empty() || !attached.is_empty()) {
                             self.push_user_prompt(&visible, &attached, true);
                         }
                         for notice in notices {

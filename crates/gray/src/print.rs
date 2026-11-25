@@ -53,6 +53,21 @@ fn meta<W: Write>(w: &mut W, text: String) -> std::io::Result<()> {
     }
 }
 
+static THINKING_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn close_thinking<W: Write>(w: &mut W) -> std::io::Result<()> {
+    use std::io::IsTerminal as _;
+    if !THINKING_OPEN.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
+    if std::io::stdout().is_terminal() {
+        write!(w, "\n\n")
+    } else {
+        eprintln!();
+        Ok(())
+    }
+}
+
 pub fn render_event_with_context<W: Write>(
     w: &mut W,
     event: &AgentEvent,
@@ -64,14 +79,23 @@ pub fn render_event_with_context<W: Write>(
     match event {
         AgentEvent::Start => Ok(()),
         AgentEvent::TextDelta { delta } => {
+            close_thinking(w)?;
             write!(w, "{delta}")?;
             w.flush()
         }
         AgentEvent::ThinkingDelta { delta } => {
-            write!(w, "{}", sgr("\x1b[2m\x1b[3m", delta))?;
-            w.flush()
+            use std::io::IsTerminal as _;
+            THINKING_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+            if std::io::stdout().is_terminal() {
+                write!(w, "{}", sgr("\x1b[2m\x1b[3m", delta))?;
+                w.flush()
+            } else {
+                eprint!("{delta}");
+                Ok(())
+            }
         }
         AgentEvent::ToolCallStart { id, name } => {
+            close_thinking(w)?;
             in_flight.insert(
                 id.clone(),
                 ActiveToolCall {

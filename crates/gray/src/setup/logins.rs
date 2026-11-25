@@ -689,8 +689,12 @@ impl Logins {
                 .filter_map(|a| a["label"].as_str())
                 .map(|l| Item::Login(Some(l.to_string())))
                 .collect();
-            if items.is_empty() && doc["ambient"] == true {
-                items.push(Item::Login(None));
+            if doc["ambient"] == true
+                && !items
+                    .iter()
+                    .any(|i| matches!(i, Item::Login(Some(l)) if l == "default"))
+            {
+                items.insert(0, Item::Login(None));
             }
             items.push(Item::Add);
             return Some(Strip {
@@ -842,11 +846,15 @@ impl Logins {
         self.plugins.get(plugin).map(|s| s.argv.clone())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn lines(
         &self,
         name: &str,
         strip: &Strip,
         sel: Option<usize>,
+        cursor: usize,
+        top: &mut usize,
+        max_body: usize,
         adding: Option<&str>,
         w: usize,
     ) -> Vec<Line<'static>> {
@@ -866,15 +874,11 @@ impl Logins {
             "{logins} login{}",
             if logins == 1 { "" } else { "s" }
         ));
-        let mut out = vec![Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                fit_chars(name, w.saturating_sub(meta.chars().count() + 1)),
-                fg(t.text_bright).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(meta, fg(t.text_dim)),
-        ])];
+        let mut body: Vec<Line<'static>> = Vec::new();
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let body_w = w.saturating_sub(2);
         for (idx, item) in strip.items.iter().enumerate() {
+            let start = body.len();
             let lit = sel == Some(idx);
             let bar = if lit {
                 Style::default().bg(t.accent)
@@ -891,12 +895,55 @@ impl Logins {
                         ]),
                         None => Line::from(Span::styled("   + add login", pick(t.accent))),
                     };
-                    out.push(line.style(bar));
+                    body.push(line.style(bar));
                 }
                 Item::Login(label) => {
-                    out.extend(self.login_block(strip, label.as_deref(), lit, w));
+                    body.extend(self.login_block(strip, label.as_deref(), lit, body_w));
                 }
             }
+            ranges.push((start, body.len()));
+        }
+        let total = body.len();
+        let cap = max_body.max(3);
+        if let Some(&(start, end)) = ranges.get(cursor.min(ranges.len().saturating_sub(1))) {
+            if start < *top {
+                *top = start;
+            } else if end > *top + cap {
+                *top = end.saturating_sub(cap).min(start);
+            }
+        }
+        *top = (*top).min(total.saturating_sub(cap));
+        let vis_h = total.min(cap);
+        let scrollable = total > cap;
+        let mut out = vec![Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                fit_chars(name, w.saturating_sub(meta.chars().count() + 1)),
+                fg(t.text_bright).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(meta, fg(t.text_dim)),
+        ])];
+        let (thumb_top, thumb_end) = if scrollable {
+            let th = ((vis_h * vis_h) / total).max(1);
+            let tt = (*top * (vis_h.saturating_sub(th))) / (total.saturating_sub(vis_h)).max(1);
+            (tt, tt + th)
+        } else {
+            (0, 0)
+        };
+        for (i, mut line) in body.into_iter().skip(*top).take(vis_h).enumerate() {
+            if scrollable {
+                let used: usize = line.spans.iter().map(Span::width).sum();
+                let pad = w.saturating_sub(used + 2);
+                if pad > 0 {
+                    line.spans.push(Span::raw(" ".repeat(pad)));
+                }
+                let in_thumb = i >= thumb_top && i < thumb_end;
+                line.spans.push(Span::styled(
+                    if in_thumb { "┃" } else { "│" },
+                    fg(if in_thumb { t.text_dim } else { t.bezel_lo }),
+                ));
+            }
+            out.push(line);
         }
         out
     }
