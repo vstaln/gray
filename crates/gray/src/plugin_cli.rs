@@ -104,6 +104,26 @@ pub(crate) fn declared_commands(home: &Path, name: &str) -> Vec<String> {
         .collect()
 }
 
+pub fn owner_of_command(home: &Path, command: &str) -> Option<String> {
+    let lock = load_lock(home).ok()?;
+    let slash = if command.starts_with('/') {
+        command.to_string()
+    } else {
+        format!("/{command}")
+    };
+    let bare = slash.trim_start_matches('/');
+    lock.plugins.iter().find_map(|(name, entry)| {
+        if !entry.enabled || entry.argv.is_empty() {
+            return None;
+        }
+        let claims = declared_commands(home, name)
+            .iter()
+            .any(|c| c == &slash || c == bare)
+            || declared_subcommands(home, name).iter().any(|c| c == bare);
+        claims.then(|| name.clone())
+    })
+}
+
 pub(crate) fn command_description(home: &Path, name: &str, command: &str) -> Option<String> {
     description_in(&metadata(home, name).ok()?, command)
 }

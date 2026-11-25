@@ -557,39 +557,6 @@ fn warn_on_divergence() {
     }
 }
 
-/// gray <=0.2.12 shipped skills in core; 0.2.13 moved them to the `skills`
-/// plugin. install.sh ensures it for updates crossing that line; this is the
-/// backstop for Windows (its updater swaps the zip directly, no installer
-/// script) and for installer attempts that failed. A stamp makes it run at
-/// most once per install, so removing the plugin is never undone by an update.
-pub(crate) async fn ensure_skills_plugin() {
-    let Ok(home) = crate::plugin_cli::home() else {
-        return;
-    };
-    let stamp = home.join("plugins").join(".skills-migration-done");
-    if stamp.exists() {
-        return;
-    }
-    let already_handled = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(&home))
-        .map(|lock| {
-            ["essentials", "extras"]
-                .iter()
-                .any(|n| lock.plugins.contains_key(*n) || lock.is_tombstoned(n))
-                || lock.plugins.contains_key("skills")
-        })
-        .unwrap_or(false);
-    if already_handled {
-        let _ = std::fs::write(&stamp, b"");
-        return;
-    }
-    match crate::plugin_cli::install_spec(&home, "essentials", false, true, None).await {
-        Ok(()) => {
-            let _ = std::fs::write(&stamp, b"");
-        }
-        Err(e) => log::warn!("essentials (skills) plugin auto-install failed: {e:#}"),
-    }
-}
-
 async fn update_plugins_after_gray() {
     match crate::plugin_cli::update_managed("all").await {
         Ok(rows) => {
@@ -613,7 +580,6 @@ async fn update_plugins_after_gray() {
         }
         Err(e) => eprintln!("plugins: update failed: {e:#}"),
     }
-    ensure_skills_plugin().await;
     crate::default_plugins::migrate_once().await;
 }
 

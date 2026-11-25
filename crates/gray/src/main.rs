@@ -263,22 +263,9 @@ async fn run() -> anyhow::Result<()> {
                 }
                 if everything {
                     let home = gray::plugin_cli::home()?;
-                    let lock =
-                        gray_plugin::lock::LockFile::load(&home.join("plugins/lock.json")).ok();
-                    let has = |n: &str| {
-                        lock.as_ref().is_some_and(|l| l.plugins.contains_key(n))
-                            || home.join("plugins").join(n).exists()
-                    };
-                    let name = if has("essentials") {
-                        "essentials"
-                    } else if has("extras") {
-                        "extras"
-                    } else if has("quality-of-life") {
-                        "quality-of-life"
-                    } else {
-                        "qol"
-                    };
-                    return gray::plugin_cli::forward(&home, name, &["update".to_string()]).await;
+                    let owner = gray::plugin_cli::owner_of_command(&home, "update")
+                        .ok_or_else(|| anyhow::anyhow!("no installed plugin handles `update`"))?;
+                    return gray::plugin_cli::forward(&home, &owner, &["update".to_string()]).await;
                 }
                 return gray::update::update_now().await;
             }

@@ -5,7 +5,7 @@ use gray_pkg::index::{Index, fetch_index};
 use gray_plugin::lock::{LockFile, lock_path};
 
 pub const FALLBACK_DEFAULT_PROFILE: &[&str] =
-    &["account", "extras", "memory", "search", "subagents"];
+    &["account", "essentials", "memory", "search", "subagents"];
 
 const RETRY: Duration = Duration::from_secs(24 * 60 * 60);
 const PROFILE_FILE: &str = "profile";
@@ -27,10 +27,11 @@ pub fn read_profile(home: &Path) -> String {
         }
     }
     if let Ok(lock) = LockFile::load(&lock_path(home)) {
-        let has_default = FALLBACK_DEFAULT_PROFILE.iter().any(|name| {
-            let canonical = gray_pkg::ops::canonical_name(name);
-            lock.plugins.contains_key(*name) || lock.plugins.contains_key(canonical.as_ref())
-        }) || lock.plugins.contains_key("quality-of-life");
+        let has_default = lock.plugins.keys().any(|installed| {
+            let canonical = gray_pkg::ops::canonical_name(installed);
+            FALLBACK_DEFAULT_PROFILE.contains(&installed.as_str())
+                || FALLBACK_DEFAULT_PROFILE.contains(&canonical.as_ref())
+        });
         if has_default {
             return "default".to_string();
         }
@@ -99,25 +100,6 @@ async fn load_profile_plugins(profile: &str) -> (Vec<String>, Option<Index>) {
         Vec::new()
     };
     (fallback, index)
-}
-
-fn preserve_vim_mode(home: &Path) {
-    let dir = home.join("plugin-settings");
-    let dst = dir.join("extras.json");
-    let mut map = std::fs::read_to_string(&dst)
-        .or_else(|_| std::fs::read_to_string(dir.join("quality-of-life.json")))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
-    if map.contains_key("vim_mode") {
-        return;
-    }
-    map.insert("vim_mode".to_string(), serde_json::Value::Bool(true));
-    let _ = std::fs::create_dir_all(&dir);
-    if let Ok(text) = serde_json::to_string_pretty(&serde_json::Value::Object(map)) {
-        let _ = std::fs::write(&dst, text);
-    }
 }
 
 fn needs_upgrade_before_retire(
@@ -195,9 +177,6 @@ async fn retire_superseded(home: &Path, index: &Index, yes: bool) -> (Vec<String
         for old in olds {
             if !removed.insert(old.clone()) {
                 continue;
-            }
-            if old == "vim" {
-                preserve_vim_mode(home);
             }
             let old_enabled = lock.plugins.get(&old).map(|e| e.enabled).unwrap_or(true);
             gray_pkg::ops::migrate_retired_alias(&canonical, &old, old_enabled);
@@ -371,8 +350,8 @@ mod tests {
     }
 
     #[test]
-    fn default_profile_folds_skills_into_extras() {
-        assert!(FALLBACK_DEFAULT_PROFILE.contains(&"extras"));
+    fn default_profile_folds_skills_into_essentials() {
+        assert!(FALLBACK_DEFAULT_PROFILE.contains(&"essentials"));
         assert!(!FALLBACK_DEFAULT_PROFILE.contains(&"skills"));
     }
 
