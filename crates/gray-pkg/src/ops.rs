@@ -208,7 +208,7 @@ async fn install_inner(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Rep
     match spec {
         NameOrUrl::Name(name) => {
             let lookup = canonical_name(&name);
-            install_index(&client, lookup, opts, false, &mut BTreeSet::new()).await
+            install_index(&client, &lookup, opts, false, &mut BTreeSet::new()).await
         }
         NameOrUrl::Url(url) => install_url(&client, &url, opts).await,
     }
@@ -649,49 +649,95 @@ impl Renames {
     }
 }
 
-pub fn renames() -> &'static Renames {
-    static RENAMES: std::sync::OnceLock<Renames> = std::sync::OnceLock::new();
-    RENAMES.get_or_init(|| Renames::from_index(&crate::index::cached()))
+static RENAMES: std::sync::RwLock<Option<std::sync::Arc<Renames>>> = std::sync::RwLock::new(None);
+
+pub(crate) fn invalidate_renames() {
+    if let Ok(mut guard) = RENAMES.write() {
+        *guard = None;
+    }
 }
 
-pub fn renamed_to(old: &str) -> Option<&'static str> {
-    renames().bundle.get(old).map(String::as_str)
+pub fn renames() -> std::sync::Arc<Renames> {
+    if let Ok(guard) = RENAMES.read()
+        && let Some(cached) = guard.as_ref()
+    {
+        return std::sync::Arc::clone(cached);
+    }
+    let built = std::sync::Arc::new(Renames::from_index(&crate::index::cached()));
+    if !built.bundle.is_empty()
+        && let Ok(mut guard) = RENAMES.write()
+    {
+        *guard = Some(std::sync::Arc::clone(&built));
+    }
+    built
 }
 
-pub fn aliases_of(bundle: &str) -> Vec<&'static str> {
+pub fn renamed_to(old: &str) -> Option<String> {
+    renames().bundle.get(old).cloned()
+}
+
+pub fn aliases_of(bundle: &str) -> Vec<String> {
     renames()
         .bundle
         .iter()
-        .filter(|(_, b)| *b == bundle)
-        .map(|(old, _)| old.as_str())
+        .filter(|(_, b)| b.as_str() == bundle)
+        .map(|(old, _)| old.clone())
         .collect()
 }
 
-pub fn part_of(old: &str) -> Option<(&'static str, &'static str)> {
-    match renames().parts.get(old)?.as_slice() {
-        [part] => Some((renamed_to(old)?, part.as_str())),
+pub fn part_of(old: &str) -> Option<(String, String)> {
+    let r = renames();
+    match r.parts.get(old)?.as_slice() {
+        [part] => Some((r.bundle.get(old)?.clone(), part.clone())),
         _ => None,
     }
 }
 
-pub fn alias_parts(old: &str) -> Option<(&'static str, &'static [String])> {
-    let parts = renames().parts.get(old)?;
-    (parts.len() > 1).then_some((renamed_to(old)?, parts.as_slice()))
+pub fn alias_parts(old: &str) -> Option<(String, Vec<String>)> {
+    let r = renames();
+    let parts = r.parts.get(old)?;
+    (parts.len() > 1)
+        .then(|| (r.bundle.get(old).cloned(), parts.clone()))
+        .and_then(|(b, p)| Some((b?, p)))
 }
 
-pub fn alias_part_names(old: &str) -> Vec<(&'static str, &'static str)> {
-    let Some(bundle) = renamed_to(old) else {
+pub fn alias_part_names(old: &str) -> Vec<(String, String)> {
+    let r = renames();
+    let Some(bundle) = r.bundle.get(old) else {
         return Vec::new();
     };
-    renames()
-        .parts
+    r.parts
         .get(old)
-        .map(|parts| parts.iter().map(|p| (bundle, p.as_str())).collect())
+        .map(|parts| parts.iter().map(|p| (bundle.clone(), p.clone())).collect())
         .unwrap_or_default()
 }
 
-pub fn canonical_name(name: &str) -> &str {
-    renamed_to(name).unwrap_or(name)
+pub fn canonical_name(name: &str) -> std::borrow::Cow<'_, str> {
+    match renamed_to(name) {
+        Some(target) => std::borrow::Cow::Owned(target),
+        None => std::borrow::Cow::Borrowed(name),
+    }
+}
+
+pub fn migrate_retired_alias(bundle: &str, old: &str, enabled: bool) {
+    let overrides = crate::parts::read();
+    let rows = migration_rows(old, enabled, &overrides);
+    if !rows.is_empty() {
+        let mut on = crate::parts::bundle(bundle);
+        for (_, target, part, part_on) in rows {
+            if target == bundle {
+                on.entry(part).or_insert(part_on);
+            }
+        }
+        if let Err(e) = crate::parts::replace(bundle, &on) {
+            log::warn!("migrated bundle {bundle}: parts.json not written: {e:#}");
+        }
+    }
+    if alias_parts(old).is_some()
+        && let Err(e) = crate::parts::drop_bundle(old)
+    {
+        log::warn!("migrated bundle {bundle}: old parts key {old} not removed: {e:#}");
+    }
 }
 
 fn migration_rows(
@@ -703,13 +749,8 @@ fn migration_rows(
     alias_part_names(name)
         .into_iter()
         .map(|(bundle, part)| {
-            let on = old.and_then(|m| m.get(part)).copied().unwrap_or(true);
-            (
-                name.to_string(),
-                bundle.to_string(),
-                part.to_string(),
-                enabled && on,
-            )
+            let on = old.and_then(|m| m.get(&part)).copied().unwrap_or(true);
+            (name.to_string(), bundle, part, enabled && on)
         })
         .collect()
 }
@@ -719,21 +760,22 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
     let before = lock.clone();
     let overrides = crate::parts::read();
     let mut migrations: Vec<(String, String, String, bool)> = Vec::new();
+    let mut retired_aliases: Vec<(String, String, bool)> = Vec::new();
     let mut done: BTreeSet<String> = BTreeSet::new();
     let names: Vec<String> = if target == "all" {
         lock.plugins.keys().cloned().collect()
     } else {
-        let group = canonical_name(target);
+        let group = canonical_name(target).into_owned();
         let mut names: Vec<String> = lock
             .plugins
             .keys()
-            .filter(|k| canonical_name(k) == group)
+            .filter(|k| canonical_name(k) == group.as_str())
             .cloned()
             .collect();
         if names.is_empty() {
             anyhow::bail!("not installed: {target}");
         }
-        names.sort_by_key(|k| k.as_str() != group);
+        names.sort_by_key(|k| k.as_str() != group.as_str());
         names
     };
     let client = crate::fetch::client()?;
@@ -769,25 +811,26 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         if hub.is_none() && comm.is_none() {
             hub = crate::index::fetch_hub_index(&client).await.ok();
         }
-        let lookup = canonical_name(name);
-        let renamed = (lookup != name.as_str()).then_some(lookup);
-        if done.contains(lookup) {
+        let lookup = canonical_name(name).into_owned();
+        let renamed = (lookup.as_str() != name.as_str()).then_some(lookup.as_str());
+        if done.contains(&lookup) {
             if renamed.is_some() {
+                retired_aliases.push((name.clone(), lookup.clone(), installed.enabled));
                 migrations.extend(migration_rows(name, installed.enabled, &overrides));
                 retire_alias(name);
             }
             continue;
         }
-        let entry = match hub.as_ref().and_then(|i| i.plugins.get(lookup)) {
+        let entry = match hub.as_ref().and_then(|i| i.plugins.get(&lookup)) {
             Some(e) => e,
             None => {
                 if comm.is_none() {
                     comm = Some(crate::index::fetch_index(&client).await?);
                 }
-                match comm.as_ref().unwrap().plugins.get(lookup) {
+                match comm.as_ref().unwrap().plugins.get(&lookup) {
                     Some(e) => e,
                     None => {
-                        let near = crate::index::near_names(comm.as_ref().unwrap(), lookup);
+                        let near = crate::index::near_names(comm.as_ref().unwrap(), &lookup);
                         out.push(UpdateRow::new(
                             name,
                             UpdateAction::Skipped(if near.is_empty() {
@@ -828,7 +871,7 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
             continue;
         }
         if !drift {
-            done.insert(lookup.to_string());
+            done.insert(lookup.clone());
             out.push(UpdateRow::new(name, UpdateAction::Current));
             continue;
         }
@@ -855,7 +898,7 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         let scope = Some(installed.scope.clone());
         match install_index(
             &client,
-            lookup,
+            &lookup,
             InstallOpts { argv, scope },
             prebuilt,
             &mut BTreeSet::new(),
@@ -864,10 +907,11 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
         {
             Ok(r) => {
                 if renamed.is_some() {
+                    retired_aliases.push((name.clone(), lookup.clone(), installed.enabled));
                     migrations.extend(migration_rows(name, installed.enabled, &overrides));
                     retire_alias(name);
                 }
-                done.insert(lookup.to_string());
+                done.insert(lookup.clone());
                 let v = r.version.clone();
                 out.push(UpdateRow {
                     name: r.name,
@@ -879,7 +923,7 @@ async fn update_inner(target: &str, check: bool) -> anyhow::Result<Vec<UpdateRow
             Err(e) => out.push(UpdateRow::new(name, UpdateAction::Failed(format!("{e:#}")))),
         }
     }
-    migrate_parts(&before, &migrations);
+    migrate_parts(&before, &migrations, &retired_aliases);
     Ok(out)
 }
 
@@ -902,10 +946,22 @@ fn retire_alias(name: &str) {
     }
 }
 
-fn migrate_parts(before: &LockFile, migrations: &[(String, String, String, bool)]) {
+fn migrate_parts(
+    before: &LockFile,
+    migrations: &[(String, String, String, bool)],
+    retired_aliases: &[(String, String, bool)],
+) {
     let mut groups: BTreeMap<&str, Vec<&(String, String, String, bool)>> = BTreeMap::new();
     for m in migrations {
         groups.entry(m.1.as_str()).or_default().push(m);
+    }
+    let mut retired_by_bundle: BTreeMap<&str, Vec<(&str, bool)>> = BTreeMap::new();
+    for (alias, bundle, enabled) in retired_aliases {
+        retired_by_bundle
+            .entry(bundle.as_str())
+            .or_default()
+            .push((alias.as_str(), *enabled));
+        groups.entry(bundle.as_str()).or_default();
     }
     let Ok(after) = read_lock() else {
         return;
@@ -924,19 +980,31 @@ fn migrate_parts(before: &LockFile, migrations: &[(String, String, String, bool)
         }
         if !preexisting {
             for alias in aliases_of(bundle) {
-                if migrated.iter().any(|(a, _, _, _)| a.as_str() == alias) {
+                if migrated
+                    .iter()
+                    .any(|(a, _, _, _)| a.as_str() == alias.as_str())
+                {
                     continue;
                 }
-                for (_, part) in alias_part_names(alias) {
-                    on.entry(part.to_string()).or_insert(false);
+                for (_, part) in alias_part_names(&alias) {
+                    on.entry(part).or_insert(false);
                 }
             }
-            let any_on = migrated.iter().any(|(_, _, _, enabled)| *enabled);
+            let retired_here = retired_by_bundle
+                .get(bundle)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let any_on = migrated.iter().any(|(_, _, _, enabled)| *enabled)
+                || retired_here.iter().any(|(alias, enabled)| {
+                    *enabled && !migrated.iter().any(|(a, _, _, _)| a.as_str() == *alias)
+                });
             if let Err(e) = set_enabled_inner(bundle, any_on) {
                 log::warn!("migrated bundle {bundle}: could not set enabled={any_on}: {e:#}");
             }
         }
-        if let Err(e) = crate::parts::replace(bundle, &on) {
+        if !on.is_empty()
+            && let Err(e) = crate::parts::replace(bundle, &on)
+        {
             log::warn!("migrated bundle {bundle}: parts.json not written: {e:#}");
         }
         let olds: BTreeSet<&str> = migrated

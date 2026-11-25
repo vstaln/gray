@@ -29,7 +29,7 @@ pub fn read_profile(home: &Path) -> String {
     if let Ok(lock) = LockFile::load(&lock_path(home)) {
         let has_default = FALLBACK_DEFAULT_PROFILE.iter().any(|name| {
             let canonical = gray_pkg::ops::canonical_name(name);
-            lock.plugins.contains_key(*name) || lock.plugins.contains_key(canonical)
+            lock.plugins.contains_key(*name) || lock.plugins.contains_key(canonical.as_ref())
         }) || lock.plugins.contains_key("quality-of-life");
         if has_default {
             return "default".to_string();
@@ -52,7 +52,7 @@ fn needed(home: &Path, name: &str) -> bool {
         return true;
     };
     let canonical = gray_pkg::ops::canonical_name(name);
-    [name, canonical]
+    [name, canonical.as_ref()]
         .iter()
         .all(|n| !lock.plugins.contains_key(*n) && !lock.is_tombstoned(n))
 }
@@ -141,9 +141,7 @@ fn plan_superseded_retirements(lock: &LockFile, index: &Index) -> Vec<(String, b
     let mut plan = Vec::new();
     for (installed, lock_entry) in &lock.plugins {
         let canonical = gray_pkg::ops::canonical_name(installed);
-        // Only retire legacy plugins when the canonical replacement itself is
-        // actually installed — never let one legacy plugin retire another.
-        if installed != canonical {
+        if installed.as_str() != canonical.as_ref() {
             continue;
         }
         let Some(entry) = index.plugins.get(installed) else {
@@ -201,6 +199,8 @@ async fn retire_superseded(home: &Path, index: &Index, yes: bool) -> (Vec<String
             if old == "vim" {
                 preserve_vim_mode(home);
             }
+            let old_enabled = lock.plugins.get(&old).map(|e| e.enabled).unwrap_or(true);
+            gray_pkg::ops::migrate_retired_alias(&canonical, &old, old_enabled);
             match gray_pkg::ops::remove(&old) {
                 Ok(()) => {
                     let plugins_dir = home.join("plugins");
@@ -246,9 +246,9 @@ pub async fn sync_profile(
         }
         let spec = gray_pkg::ops::canonical_name(name);
         let res = if yes {
-            crate::plugin_cli::install_spec(home, spec, false, true, None).await
+            crate::plugin_cli::install_spec(home, &spec, false, true, None).await
         } else {
-            crate::plugin_cli::install_spec_default(home, spec).await
+            crate::plugin_cli::install_spec_default(home, &spec).await
         };
         match res {
             Ok(()) => lines.push(format!("installed {spec}")),
@@ -305,7 +305,7 @@ pub(crate) async fn migrate_once() {
         }
         let _ = std::fs::write(&stamp, gray_core::time::now_secs().to_string());
         let spec = gray_pkg::ops::canonical_name(name);
-        match crate::plugin_cli::install_spec_default(&home, spec).await {
+        match crate::plugin_cli::install_spec_default(&home, &spec).await {
             Ok(()) => {
                 let _ = std::fs::remove_file(&stamp);
             }

@@ -212,6 +212,7 @@ fn write_cache(file: &str, cache: &IndexCache) -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&path, serde_json::to_string(cache)?)?;
+    crate::ops::invalidate_renames();
     Ok(())
 }
 

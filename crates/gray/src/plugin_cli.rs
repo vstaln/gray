@@ -295,8 +295,8 @@ fn resolve_part(bundle: &str, raw: &str) -> String {
         _ => trimmed,
     };
     gray_pkg::ops::part_of(tail)
-        .filter(|(b, _)| *b == bundle)
-        .map(|(_, part)| part.to_string())
+        .filter(|(b, _)| b == bundle)
+        .map(|(_, part)| part)
         .unwrap_or_else(|| tail.to_string())
 }
 
@@ -347,7 +347,7 @@ fn apply_parts_after_install(
 fn toggle_part(home: &Path, bundle: &str, part: &str, on: bool) -> anyhow::Result<String> {
     ensure_installed(home, bundle)?;
     let parts = parts_of(home, bundle);
-    if !parts.is_empty() && !parts.iter().any(|p| p.name == part) {
+    if parts.is_empty() || !parts.iter().any(|p| p.name == part) {
         return Err(unknown_part(bundle, part, &parts));
     }
     gray_pkg::parts::set(bundle, part, on)?;
@@ -405,17 +405,20 @@ pub fn toggle_managed(target: &str, on: bool) -> anyhow::Result<String> {
         ));
     }
     if let Some((bundle, _)) = gray_pkg::ops::alias_parts(target) {
-        let installed = lock.plugins.contains_key(bundle);
+        let installed = lock.plugins.contains_key(&bundle);
         anyhow::ensure!(
             installed,
             "{}",
-            not_installed_message(&home, gray_pkg::ops::canonical_name(target))
+            not_installed_message(&home, &gray_pkg::ops::canonical_name(target))
         );
-        return Err(anyhow::anyhow!("{}", multi_part_note(target, bundle, true)));
+        return Err(anyhow::anyhow!(
+            "{}",
+            multi_part_note(target, &bundle, true)
+        ));
     }
     if let Some((bundle, part)) = gray_pkg::ops::part_of(target) {
-        let line = toggle_part(&home, bundle, part, on)?;
-        return Ok(disabled_bundle_note(&lock, bundle, line));
+        let line = toggle_part(&home, &bundle, &part, on)?;
+        return Ok(disabled_bundle_note(&lock, &bundle, line));
     }
     let target = installed_name(&lock, target);
     if lock.plugins.contains_key(&target) {
@@ -591,8 +594,8 @@ async fn install_spec_gated(
     }
     if let gray_pkg::ops::NameOrUrl::Name(name) = gray_pkg::ops::parse_spec(spec) {
         let canonical = gray_pkg::ops::canonical_name(&name);
-        if wanted.iter().any(|w| w == canonical) {
-            wanted.retain(|w| w == canonical);
+        if wanted.iter().any(|w| w.as_str() == canonical.as_ref()) {
+            wanted.retain(|w| w.as_str() == canonical.as_ref());
         }
     }
     let mut parts_failed: Option<String> = None;
@@ -663,15 +666,15 @@ async fn install_spec_body(
     let mut parsed = gray_pkg::ops::parse_spec(spec);
     let mut lines = Vec::new();
     if let gray_pkg::ops::NameOrUrl::Name(ref mut name) = parsed {
-        let canonical = gray_pkg::ops::canonical_name(name);
-        if canonical != name.as_str() {
+        let canonical = gray_pkg::ops::canonical_name(name).into_owned();
+        if canonical != *name {
             let installed = load_lock(home)
-                .map(|l| l.plugins.contains_key(canonical))
+                .map(|l| l.plugins.contains_key(&canonical))
                 .unwrap_or(false);
             if installed && let Some((bundle, part)) = gray_pkg::ops::part_of(name) {
-                let line = toggle_part(home, bundle, part, true)?;
+                let line = toggle_part(home, &bundle, &part, true)?;
                 let line = match load_lock(home) {
-                    Ok(lock) => disabled_bundle_note(&lock, bundle, line),
+                    Ok(lock) => disabled_bundle_note(&lock, &bundle, line),
                     Err(_) => line,
                 };
                 for l in line.lines() {
@@ -681,11 +684,11 @@ async fn install_spec_body(
                 return Ok(lines);
             }
             if installed && let Some((bundle, _)) = gray_pkg::ops::alias_parts(name) {
-                lines.push(multi_part_note(name, bundle, true));
+                lines.push(multi_part_note(name, &bundle, true));
                 lines.push(format!("{bundle} is already installed — no reinstall"));
                 return Ok(lines);
             }
-            *name = canonical.to_string();
+            *name = canonical;
         }
     }
 
@@ -1262,7 +1265,7 @@ pub fn remove_managed(name: &str) -> anyhow::Result<()> {
     if crate::default_plugins::read_profile(&home) != "bare"
         || crate::default_plugins::FALLBACK_DEFAULT_PROFILE
             .iter()
-            .any(|d| *d == name || gray_pkg::ops::canonical_name(d) == name)
+            .any(|d| *d == name || gray_pkg::ops::canonical_name(d).as_ref() == name.as_str())
     {
         let lock_file = gray_plugin::lock::lock_path(&home);
         let mut lock = load_lock(&home)?;
@@ -1309,28 +1312,28 @@ pub fn set_managed_global(name: &str, on: bool) -> anyhow::Result<()> {
     gray_pkg::ops::set_global(name, on)
 }
 
-fn resolve_update_target<'a>(home: &Path, target: &'a str) -> &'a str {
+fn resolve_update_target(home: &Path, target: &str) -> String {
     if target == "all" {
-        return target;
+        return target.to_string();
     }
     let Ok(lock) = load_lock(home) else {
-        return target;
+        return target.to_string();
     };
     if lock.plugins.contains_key(target) {
-        return target;
+        return target.to_string();
     }
     gray_pkg::ops::aliases_of(target)
         .into_iter()
-        .find(|old| lock.plugins.contains_key(*old))
-        .unwrap_or(target)
+        .find(|old| lock.plugins.contains_key(old))
+        .unwrap_or_else(|| target.to_string())
 }
 
 pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
     let home = home()?;
     gray_pkg::index::ensure_cached().await;
     let target = resolve_update_target(&home, target);
-    ensure_installed(&home, target)?;
-    let mut reports = gray_pkg::ops::update(target).await?;
+    ensure_installed(&home, &target)?;
+    let mut reports = gray_pkg::ops::update(&target).await?;
     for r in &mut reports {
         if !matches!(&r.action, gray_pkg::ops::UpdateAction::Installed(_)) {
             continue;
@@ -1354,9 +1357,10 @@ pub async fn update_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::U
 
 pub async fn check_managed(target: &str) -> anyhow::Result<Vec<gray_pkg::ops::UpdateRow>> {
     let home = home()?;
+    gray_pkg::index::ensure_cached().await;
     let target = resolve_update_target(&home, target);
-    ensure_installed(&home, target)?;
-    gray_pkg::ops::check_update(target).await
+    ensure_installed(&home, &target)?;
+    gray_pkg::ops::check_update(&target).await
 }
 
 /// The singular/plural counterpart of `name`: drops a trailing 's', or
@@ -1441,8 +1445,8 @@ fn installed_name(lock: &LockFile, name: &str) -> String {
         return name.to_string();
     }
     let canonical = gray_pkg::ops::canonical_name(name);
-    if canonical != name && lock.plugins.contains_key(canonical) {
-        return canonical.to_string();
+    if canonical.as_ref() != name && lock.plugins.contains_key(canonical.as_ref()) {
+        return canonical.into_owned();
     }
     name.to_string()
 }
@@ -1454,7 +1458,7 @@ fn ensure_installed(home: &Path, name: &str) -> anyhow::Result<()> {
     let lock = load_lock(home)?;
     let canonical = gray_pkg::ops::canonical_name(name);
     anyhow::ensure!(
-        lock.plugins.contains_key(name) || lock.plugins.contains_key(canonical),
+        lock.plugins.contains_key(name) || lock.plugins.contains_key(canonical.as_ref()),
         "{}",
         not_installed_message(home, name)
     );
@@ -1630,19 +1634,19 @@ fn alias_cli_target(
         return None;
     }
     let (bundle, part) = gray_pkg::ops::part_of(name)?;
-    let (bundle_home, entry) = match lock.plugins.get(bundle) {
+    let (bundle_home, entry) = match lock.plugins.get(&bundle) {
         Some(entry) => (home.to_path_buf(), entry.clone()),
         None => {
             let (u, l) = user_home?;
-            (u.clone(), l.plugins.get(bundle)?.clone())
+            (u.clone(), l.plugins.get(&bundle)?.clone())
         }
     };
     entry.cli_argv.as_ref()?;
-    let parts = parts_of(&bundle_home, bundle);
+    let parts = parts_of(&bundle_home, &bundle);
     if !parts.is_empty() && !parts.iter().any(|p| p.name == part) {
         return None;
     }
-    Some((bundle_home, bundle.to_string(), entry, part.to_string()))
+    Some((bundle_home, bundle, entry, part))
 }
 
 pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result<()> {
@@ -1736,13 +1740,13 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
                         sidecar_usage(home, name)
                     } else {
                         if let Some((bundle, _)) = gray_pkg::ops::alias_parts(name) {
-                            let installed = lock.plugins.contains_key(bundle)
+                            let installed = lock.plugins.contains_key(&bundle)
                                 || user_home
                                     .as_ref()
-                                    .is_some_and(|(_, l)| l.plugins.contains_key(bundle));
+                                    .is_some_and(|(_, l)| l.plugins.contains_key(&bundle));
                             return Err(anyhow::anyhow!(
                                 "{}",
-                                multi_part_note(name, bundle, installed)
+                                multi_part_note(name, &bundle, installed)
                             ));
                         }
                         if let Some((bundle, _)) = gray_pkg::ops::part_of(name) {
