@@ -1682,8 +1682,10 @@ pub async fn forward(home: &Path, name: &str, rest: &[String]) -> anyhow::Result
     // alias — the exact spelling always wins; the variant is only a
     // fallback (subagent → subagents, plugins → plugin).
     let alt = number_variant(name);
+    let is_part_alias =
+        gray_pkg::ops::part_of(name).is_some() || gray_pkg::ops::alias_parts(name).is_some();
     let installed = installed_name(&lock, name);
-    let aliased = (installed != name).then_some(installed);
+    let aliased = (!is_part_alias && installed != name).then_some(installed);
     let names: Vec<&str> = std::iter::once(name)
         .chain(aliased.as_deref())
         .chain(alt.as_deref())
@@ -2092,7 +2094,14 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
 
     // Same implicit singular/plural alias as `forward`: exact first.
     let alt = number_variant(name);
-    let names: Vec<&str> = std::iter::once(name).chain(alt.as_deref()).collect();
+    let is_part_alias =
+        gray_pkg::ops::part_of(name).is_some() || gray_pkg::ops::alias_parts(name).is_some();
+    let installed = installed_name(&lock, name);
+    let aliased = (!is_part_alias && installed != name).then_some(installed);
+    let names: Vec<&str> = std::iter::once(name)
+        .chain(aliased.as_deref())
+        .chain(alt.as_deref())
+        .collect();
     for n in &names {
         lazy_adopt(&home, n, &mut lock).await;
         if let Some((u, l)) = user_home.as_mut() {
@@ -2117,39 +2126,45 @@ pub async fn capture_slash(name: &str, args: &[String]) -> anyhow::Result<Option
             break;
         }
     }
-    let selected = selected.or_else(|| {
-        let mut claimers = Vec::new();
-        for n in &names {
-            claimers.extend(
-                owners_for_command(&home, n, &lock, false)
-                    .into_iter()
-                    .map(|(h, o, e)| (h, o, e, (*n).to_string())),
-            );
-        }
-        if let Some((u, l)) = &user_home {
+    let selected = selected
+        .or_else(|| {
+            let mut claimers = Vec::new();
             for n in &names {
                 claimers.extend(
-                    owners_for_command(u, n, l, true)
+                    owners_for_command(&home, n, &lock, false)
                         .into_iter()
                         .map(|(h, o, e)| (h, o, e, (*n).to_string())),
                 );
             }
-        }
-        let (ready, dead): (Vec<_>, Vec<_>) = claimers
-            .into_iter()
-            .partition(|(h, o, e, _)| enabled(h, o, e));
-        conflict_note = command_conflict_note(name, ready.iter().map(|(_, o, _, _)| o.as_str()));
-        if ready.is_empty() {
-            if let Some((u, owner, e, matched)) = dead.into_iter().next() {
-                return Some((u, owner, e, Some(matched)));
+            if let Some((u, l)) = &user_home {
+                for n in &names {
+                    claimers.extend(
+                        owners_for_command(u, n, l, true)
+                            .into_iter()
+                            .map(|(h, o, e)| (h, o, e, (*n).to_string())),
+                    );
+                }
             }
-            return None;
-        }
-        ready
-            .into_iter()
-            .next()
-            .map(|(u, owner, e, matched)| (u, owner, e, Some(matched)))
-    });
+            let (ready, dead): (Vec<_>, Vec<_>) = claimers
+                .into_iter()
+                .partition(|(h, o, e, _)| enabled(h, o, e));
+            conflict_note =
+                command_conflict_note(name, ready.iter().map(|(_, o, _, _)| o.as_str()));
+            if ready.is_empty() {
+                if let Some((u, owner, e, matched)) = dead.into_iter().next() {
+                    return Some((u, owner, e, Some(matched)));
+                }
+                return None;
+            }
+            ready
+                .into_iter()
+                .next()
+                .map(|(u, owner, e, matched)| (u, owner, e, Some(matched)))
+        })
+        .or_else(|| {
+            alias_cli_target(&home, &lock, user_home.as_ref(), name)
+                .map(|(h, o, e, p)| (h, o, e, Some(p)))
+        });
     let Some((entry_home, entry_name, entry, prepend)) = selected else {
         return Ok(match index_owner_hint(name).await {
             Some(hint) => Some(hint),
