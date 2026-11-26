@@ -4,8 +4,9 @@ use std::time::Instant;
 
 static RETURNED: Mutex<Option<u64>> = Mutex::new(None);
 static LAST_ACTIVE: Mutex<Option<Instant>> = Mutex::new(None);
-static TURN_GEN: AtomicU64 = AtomicU64::new(0);
+static TURN_GEN: AtomicU64 = AtomicU64::new(1);
 static RETURN_GEN: AtomicU64 = AtomicU64::new(0);
+static RECAP_SHOWN_GEN: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn activity() {
     *LAST_ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
@@ -15,9 +16,15 @@ pub(crate) fn turn_started() {
     TURN_GEN.fetch_add(1, Ordering::Relaxed);
 }
 
+pub(crate) fn mark_recap_shown() {
+    RECAP_SHOWN_GEN.store(TURN_GEN.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
 pub(crate) fn recap_fresh() -> bool {
+    let turn = TURN_GEN.load(Ordering::Relaxed);
     !crate::repl::TURN_IN_FLIGHT.load(Ordering::Relaxed)
-        && TURN_GEN.load(Ordering::Relaxed) == RETURN_GEN.load(Ordering::Relaxed)
+        && turn == RETURN_GEN.load(Ordering::Relaxed)
+        && RECAP_SHOWN_GEN.load(Ordering::Relaxed) != turn
 }
 
 pub(crate) fn focus(gained: bool, turn_running: bool) {

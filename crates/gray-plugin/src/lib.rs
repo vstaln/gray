@@ -10,6 +10,7 @@ use gray_core::message::{Message, ToolDef};
 
 pub mod builder;
 pub mod capabilities;
+pub mod claude_code;
 pub mod host;
 pub mod lazy;
 mod live;

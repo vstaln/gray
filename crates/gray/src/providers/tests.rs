@@ -85,7 +85,7 @@ fn provider_cache_shrinks_entries_for_removed_provider_plugins() {
     assert!(reloaded.plugins.is_empty());
 }
 
-fn write_user_global_provider(user: &Path, global: bool) {
+fn write_user_home_provider(user: &Path, enabled: bool, global: bool) {
     std::fs::create_dir_all(user.join("plugins")).unwrap();
     std::fs::write(
         user.join("plugins/global-provider-manifest.json"),
@@ -96,6 +96,7 @@ fn write_user_global_provider(user: &Path, global: bool) {
     lock.plugins.insert(
         "global-provider".to_string(),
         LockEntry {
+            enabled,
             global,
             ..lock_entry(vec!["/user/plugins/global-provider/bin/plugin".to_string()])
         },
@@ -109,11 +110,11 @@ fn global_user_home_provider_resolves_from_an_empty_session_home() {
     let session = tempfile::tempdir().unwrap();
     let auth_ref = "plugin:global-provider:p:a";
 
-    write_user_global_provider(user.path(), true);
+    write_user_home_provider(user.path(), true, false);
     let registry = ProviderRegistry::load_cached_with_user_home(session.path(), Some(user.path()));
     let installed = registry
         .resolve("global-provider:p", auth_ref)
-        .expect("global user-home provider resolves from a session home");
+        .expect("enabled user-home provider resolves from a session home");
     assert_eq!(
         installed.argv,
         vec!["/user/plugins/global-provider/bin/plugin".to_string()]
@@ -123,7 +124,7 @@ fn global_user_home_provider_resolves_from_an_empty_session_home() {
         user.path()
     );
 
-    write_user_global_provider(user.path(), false);
+    write_user_home_provider(user.path(), false, true);
     let registry = ProviderRegistry::load_cached_with_user_home(session.path(), Some(user.path()));
     assert!(registry.resolve("global-provider:p", auth_ref).is_none());
 }

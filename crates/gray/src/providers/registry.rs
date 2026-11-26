@@ -104,7 +104,7 @@ impl ProviderRegistry {
         let mut cache = ProviderCache::load(&cache_path(home));
         let _ = refresh_installed_argv(home, &mut cache);
         if let Some(user) = user_home.filter(|user| differs(home, user)) {
-            merge_global_entries(user, &mut cache);
+            merge_user_home_entries(user, &mut cache);
         }
         Self { cache }
     }
@@ -203,11 +203,11 @@ fn plugin_home_with_user(home: &Path, user_home: Option<&Path>, plugin: &str) ->
     let Some(user) = user_home.filter(|user| differs(home, user)) else {
         return home.to_path_buf();
     };
-    let global = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(user))
+    let enabled = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(user))
         .ok()
-        .and_then(|lock| lock.plugins.get(plugin).map(|e| e.global && e.enabled))
+        .and_then(|lock| lock.plugins.get(plugin).map(|e| e.enabled))
         .unwrap_or(false);
-    if global {
+    if enabled {
         user.to_path_buf()
     } else {
         home.to_path_buf()
@@ -218,23 +218,23 @@ pub(crate) fn differs(home: &Path, user: &Path) -> bool {
     user != home && std::fs::canonicalize(user).ok() != std::fs::canonicalize(home).ok()
 }
 
-fn merge_global_entries(user: &Path, cache: &mut ProviderCache) {
+fn merge_user_home_entries(user: &Path, cache: &mut ProviderCache) {
     let Ok(user_lock) = gray_plugin::lock::LockFile::load(&gray_plugin::lock::lock_path(user))
     else {
         return;
     };
     for (name, entry) in &user_lock.plugins {
-        if !entry.global || !entry.enabled || cache.plugins.contains_key(name) {
+        if !entry.enabled || cache.plugins.contains_key(name) {
+            continue;
+        }
+        let cached = cached_from_manifest(user, name, entry);
+        if cached.providers.is_empty() {
             continue;
         }
         let argv = spawn_argv(name, user, entry).unwrap_or_default();
-        cache.plugins.insert(
-            name.clone(),
-            CachedProviderPlugin {
-                argv,
-                ..cached_from_manifest(user, name, entry)
-            },
-        );
+        cache
+            .plugins
+            .insert(name.clone(), CachedProviderPlugin { argv, ..cached });
     }
 }
 
