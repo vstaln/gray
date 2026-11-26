@@ -98,11 +98,12 @@ impl TextArea {
     pub(crate) fn insert_element(&mut self, placeholder: &str) {
         let start = self.cursor;
         self.insert_str(placeholder);
-        let end = start + placeholder.len();
-        self.elements.push(TextElement { range: start..end });
-        self.elements.sort_by_key(|e| e.range.start);
-
+        self.mark_element(start..start + placeholder.len());
         self.preferred_col = None;
+    }
+    pub(crate) fn mark_element(&mut self, range: Range<usize>) {
+        self.elements.push(TextElement { range });
+        self.elements.sort_by_key(|e| e.range.start);
     }
     pub(crate) fn shift_elements(&mut self, pos: usize, removed: usize, inserted: usize) {
         let diff = inserted as isize - removed as isize;

@@ -81,7 +81,7 @@ fn apply(tui: &mut Tui, reply: KeyReply) -> KeyOutcome {
         tui.textarea.set_cursor(cursor);
     }
     if retyped || moved {
-        super::sync_attachment_markers(tui);
+        super::attach::sync_attachment_markers(tui);
         tui.history_idx = None;
         tui.sel = 0;
     }

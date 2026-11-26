@@ -1,27 +1,40 @@
 //! Prompt history persistence: submitted composer prompts are kept in a
 //! JSON-lines file under the gray home so up-arrow / ctrl-r history survives
-//! restarts. One JSON string per line so multi-line drafts round-trip.
+//! restarts.
 
 use std::path::{Path, PathBuf};
 
 const CAP: usize = 500;
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct Entry {
+    pub text: String,
+    pub attachments: Vec<PathBuf>,
+}
+
 fn path() -> Option<PathBuf> {
     gray_core::paths::gray_home().map(|h| h.join("history.jsonl"))
 }
 
-pub(crate) fn load() -> Vec<String> {
+pub(crate) fn load() -> Vec<Entry> {
     path().map(|p| load_from(&p)).unwrap_or_default()
 }
 
-fn load_from(path: &Path) -> Vec<String> {
+fn load_from(path: &Path) -> Vec<Entry> {
     let Ok(body) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    let mut out: Vec<String> = body
+    let mut out: Vec<Entry> = body
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<String>(l).ok())
+        .filter_map(|l| {
+            serde_json::from_str::<Entry>(l).ok().or_else(|| {
+                serde_json::from_str::<String>(l).ok().map(|text| Entry {
+                    text,
+                    attachments: Vec::new(),
+                })
+            })
+        })
         .collect();
     if out.len() > CAP {
         out.drain(..out.len() - CAP);
@@ -31,11 +44,11 @@ fn load_from(path: &Path) -> Vec<String> {
 
 /// Append `entry` to `history`, skipping empties and consecutive duplicates
 /// and keeping at most CAP entries. Returns whether the history changed.
-fn push(history: &mut Vec<String>, entry: &str) -> bool {
-    if entry.is_empty() || history.last().is_some_and(|l| l == entry) {
+fn push(history: &mut Vec<Entry>, entry: Entry) -> bool {
+    if (entry.text.is_empty() && entry.attachments.is_empty()) || history.last() == Some(&entry) {
         return false;
     }
-    history.push(entry.to_string());
+    history.push(entry);
     if history.len() > CAP {
         let over = history.len() - CAP;
         history.drain(..over);
@@ -44,8 +57,14 @@ fn push(history: &mut Vec<String>, entry: &str) -> bool {
 }
 
 /// Append `entry` to `history` and persist it under the gray home.
-pub(crate) fn record(history: &mut Vec<String>, entry: &str) {
-    if !push(history, entry) {
+pub(crate) fn record(history: &mut Vec<Entry>, text: &str, attachments: &[PathBuf]) {
+    if !push(
+        history,
+        Entry {
+            text: text.to_string(),
+            attachments: attachments.to_vec(),
+        },
+    ) {
         return;
     }
     if let Some(p) = path() {
@@ -53,10 +72,15 @@ pub(crate) fn record(history: &mut Vec<String>, entry: &str) {
     }
 }
 
-fn save_to(path: &Path, history: &[String]) {
+fn save_to(path: &Path, history: &[Entry]) {
     let mut body = String::new();
     for h in history {
-        if let Ok(line) = serde_json::to_string(h) {
+        let line = if h.attachments.is_empty() {
+            serde_json::to_string(&h.text)
+        } else {
+            serde_json::to_string(h)
+        };
+        if let Ok(line) = line {
             body.push_str(&line);
             body.push('\n');
         }

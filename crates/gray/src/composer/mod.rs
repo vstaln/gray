@@ -51,7 +51,7 @@ pub(crate) use text_area::TextArea;
 /// dedicated `search:` line above the box.
 pub(crate) struct HistSearch {
     pub query: String,
-    pub saved: String,
+    pub saved: KilledDraft,
     pub saved_cursor: usize,
     pub idx: Option<usize>,
 }
@@ -148,9 +148,9 @@ pub struct Tui {
     pending: String,
     thinking: bool,
     hide_thinking: bool,
-    pub(crate) history: Vec<String>,
+    pub(crate) history: Vec<crate::prompt_history::Entry>,
     pub(crate) history_idx: Option<usize>,
-    pub(crate) draft: String,
+    pub(crate) draft: KilledDraft,
 
     /// One-slot kill ring for ctrl-y (see KilledDraft).
     pub(crate) killed_draft: Option<KilledDraft>,
@@ -418,7 +418,7 @@ impl Tui {
             hide_thinking: false,
             history: Vec::new(),
             history_idx: None,
-            draft: String::new(),
+            draft: KilledDraft::default(),
             killed_draft: None,
             hint: None,
             hint_line: None,

@@ -263,10 +263,7 @@ fn yank_killed(tui: &mut Tui) -> Option<KeyOutcome> {
     tui.hint = None;
     tui.history_idx = None;
     if tui.textarea.is_empty() {
-        tui.textarea.set_text(&killed.text);
-        tui.textarea.move_to_end();
-        tui.pending_pastes = killed.pending_pastes;
-        tui.attachments = killed.attachments;
+        restore_draft(tui, killed);
     } else {
         tui.textarea.insert_str(&killed.text);
         tui.pending_pastes.extend(killed.pending_pastes);
@@ -306,21 +303,52 @@ fn fill_completion(tui: &mut Tui, name: &str) {
     }
 }
 
+fn snapshot_draft(tui: &Tui) -> super::super::KilledDraft {
+    super::super::KilledDraft {
+        text: tui.textarea.text().to_string(),
+        pending_pastes: tui.pending_pastes.clone(),
+        attachments: tui.attachments.clone(),
+    }
+}
+
+fn restore_draft(tui: &mut Tui, draft: super::super::KilledDraft) {
+    tui.textarea.set_text(&draft.text);
+    tui.pending_pastes = draft.pending_pastes;
+    tui.attachments = draft.attachments;
+    super::attach::restore_attachment_chips(tui);
+    for (placeholder, _) in &tui.pending_pastes {
+        for (start, _) in draft.text.match_indices(placeholder) {
+            tui.textarea.mark_element(start..start + placeholder.len());
+        }
+    }
+    tui.textarea.move_to_end();
+}
+
+fn restore_history(tui: &mut Tui, idx: usize) {
+    let entry = tui.history[idx].clone();
+    restore_draft(
+        tui,
+        super::super::KilledDraft {
+            text: entry.text,
+            attachments: entry.attachments,
+            pending_pastes: Vec::new(),
+        },
+    );
+}
+
 fn history_prev(tui: &mut Tui) {
     if tui.history.is_empty() {
         return;
     }
     if tui.history_idx.is_none() {
-        tui.draft = tui.textarea.text().to_string();
+        tui.draft = snapshot_draft(tui);
         tui.history_idx = Some(tui.history.len());
     }
     if let Some(idx) = tui.history_idx
         && idx > 0
     {
         tui.history_idx = Some(idx - 1);
-        let h = tui.history[idx - 1].clone();
-        tui.textarea.set_text(&h);
-        tui.textarea.move_to_end();
+        restore_history(tui, idx - 1);
     }
 }
 
@@ -330,14 +358,12 @@ fn history_next(tui: &mut Tui) {
     };
     if idx + 1 >= tui.history.len() {
         let draft = std::mem::take(&mut tui.draft);
-        tui.textarea.set_text(&draft);
+        restore_draft(tui, draft);
         tui.history_idx = None;
     } else {
         tui.history_idx = Some(idx + 1);
-        let h = tui.history[idx + 1].clone();
-        tui.textarea.set_text(&h);
+        restore_history(tui, idx + 1);
     }
-    tui.textarea.move_to_end();
 }
 
 /// ctrl-r entry point: stash the draft, preview the newest history entry
@@ -347,7 +373,7 @@ fn enter_search(tui: &mut Tui) {
     if tui.search.is_some() {
         return;
     }
-    let saved = tui.textarea.text().to_string();
+    let saved = snapshot_draft(tui);
     let saved_cursor = tui.textarea.cursor();
     tui.search = Some(super::super::HistSearch {
         query: String::new(),
@@ -372,7 +398,7 @@ fn cancel_search(tui: &mut Tui) {
     let Some(s) = tui.search.take() else {
         return;
     };
-    tui.textarea.set_text(&s.saved);
+    restore_draft(tui, s.saved);
     tui.textarea.set_cursor(s.saved_cursor);
 }
 
@@ -382,11 +408,12 @@ fn set_match(tui: &mut Tui, idx: Option<usize>) {
         return;
     };
     s.idx = idx;
-    let preview = idx
-        .map(|i| tui.history[i].clone())
-        .unwrap_or_else(|| s.saved.clone());
-    tui.textarea.set_text(&preview);
-    tui.textarea.move_to_end();
+    if let Some(i) = idx {
+        restore_history(tui, i);
+    } else {
+        let draft = s.saved.clone();
+        restore_draft(tui, draft);
+    }
 }
 
 fn search_newest(tui: &mut Tui) {
@@ -394,7 +421,7 @@ fn search_newest(tui: &mut Tui) {
         return;
     };
     let q = s.query.clone();
-    let idx = tui.history.iter().rposition(|h| h.contains(&q));
+    let idx = tui.history.iter().rposition(|h| h.text.contains(&q));
     set_match(tui, idx);
 }
 
@@ -404,7 +431,10 @@ fn search_older(tui: &mut Tui) {
     };
     let q = s.query.clone();
     let start = s.idx.unwrap_or(tui.history.len());
-    if let Some(i) = tui.history[..start].iter().rposition(|h| h.contains(&q)) {
+    if let Some(i) = tui.history[..start]
+        .iter()
+        .rposition(|h| h.text.contains(&q))
+    {
         set_match(tui, Some(i));
     }
 }
@@ -419,7 +449,7 @@ fn search_newer(tui: &mut Tui) {
     let q = s.query.clone();
     let idx = tui.history[cur + 1..]
         .iter()
-        .position(|h| h.contains(&q))
+        .position(|h| h.text.contains(&q))
         .map(|o| cur + 1 + o);
     if let Some(i) = idx {
         set_match(tui, Some(i));

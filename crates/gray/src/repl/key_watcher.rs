@@ -369,6 +369,9 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             if text.is_empty() && t.attachments.is_empty() {
                                 continue;
                             }
+                            if !crate::composer::input::attachments_ready(&mut t, &text) {
+                                continue;
+                            }
                             let local = t.attachments.is_empty()
                                 && turn_locals
                                     .as_ref()
@@ -389,15 +392,15 @@ pub(crate) fn spawn_key_watcher_with_typing(
                                 );
                                 continue;
                             }
-                            crate::composer::input::sync_attachment_markers(&mut t);
                             let attached: Vec<std::path::PathBuf> =
                                 std::mem::take(&mut t.attachments);
 
-                            crate::prompt_history::record(&mut t.history, &text);
+                            crate::prompt_history::record(&mut t.history, &text, &attached);
                             t.queued_inputs.push_back((text, attached));
                             t.textarea.set_text("");
                             t.pending_pastes.clear();
                             t.history_idx = None;
+                            t.draft = crate::composer::KilledDraft::default();
                             t.matches.clear();
                             t.sel = 0;
                             let _ = t.draw();

@@ -45,7 +45,7 @@ impl RpcFailure {
 }
 
 pub struct AcpClient {
-    pub child: Child,
+    child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
     next_id: u64,
     pending: Arc<Mutex<HashMap<String, SyncSender<Value>>>>,
@@ -62,6 +62,11 @@ impl AcpClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .envs(spec.env.iter().cloned());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
         let mut child = cmd.spawn()?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
@@ -479,6 +484,12 @@ fn id_key(id: &Value) -> String {
 
 impl Drop for AcpClient {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Ok(group) = libc::pid_t::try_from(self.child.id())
+            && group > 1
+        {
+            unsafe { libc::kill(-group, libc::SIGKILL) };
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

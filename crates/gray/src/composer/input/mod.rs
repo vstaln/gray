@@ -11,9 +11,7 @@ mod plugin_key;
 
 use keys::KeyOutcome;
 
-pub(crate) use attach::{
-    sync_attachment_markers, try_attach_clipboard_image, try_attach_image_paste,
-};
+pub(crate) use attach::{attachments_ready, try_attach_clipboard_image, try_attach_image_paste};
 pub(crate) use clipboard::paste_from_system_clipboard;
 
 #[cfg(unix)]
@@ -654,15 +652,14 @@ fn try_submit(tui: &mut Tui) -> Option<(String, Vec<PathBuf>)> {
         tui.pending_pastes.clear();
         return None;
     }
-    if needs_cold_confirm(tui, &trimmed) {
+    if !attachments_ready(tui, &trimmed) || needs_cold_confirm(tui, &trimmed) {
         return None;
     }
     tui.pending_pastes.clear();
-    crate::prompt_history::record(&mut tui.history, &trimmed);
     tui.history_idx = None;
-    tui.draft.clear();
-    attach::sync_attachment_markers(tui);
+    tui.draft = super::KilledDraft::default();
     let attached: Vec<PathBuf> = std::mem::take(&mut tui.attachments);
+    crate::prompt_history::record(&mut tui.history, &trimmed, &attached);
     tui.textarea.set_text("");
     if tui.is_task_running {
         if !crate::tui::sanitize_user_text(&trimmed).trim().is_empty() || !attached.is_empty() {

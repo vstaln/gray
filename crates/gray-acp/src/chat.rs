@@ -294,37 +294,41 @@ pub fn split_tail_with(turn: &mut PreparedTurn, images: bool) {
                 })
                 .unwrap_or_default();
             outputs.push((call_id, output));
-        } else if let Some(text) = if item_type(item) == "message"
-            && matches!(
-                item.get("role").and_then(Value::as_str),
-                None | Some("user")
-            ) {
-            let raw = message_text(item);
-            if is_slash_command(&raw) {
-                Some(raw.trim_start().to_string())
-            } else {
-                item_to_transcript(item)
-            }
         } else {
-            item_to_transcript(item)
-        } {
-            let mut t = text;
-            if t.len() > MAX_TRANSCRIPT_CHARS {
-                let mut end = MAX_TRANSCRIPT_CHARS;
-                while !t.is_char_boundary(end) {
-                    end -= 1;
-                }
-                t.truncate(end);
-                t.push_str("\n[truncated]");
-            }
-            prompt.push(json!({"type": "text", "text": t}));
-            if images && item_type(item) == "message" {
-                prompt.extend(image_blocks(item));
-            }
+            append_prompt_item(&mut prompt, item, images);
         }
     }
     turn.outputs = outputs;
     turn.tail_prompt = prompt;
+}
+
+pub(crate) fn append_prompt_item(prompt: &mut Vec<Value>, item: &Value, images: bool) {
+    let is_message = item_type(item) == "message";
+    let text = if is_message
+        && matches!(
+            item.get("role").and_then(Value::as_str),
+            None | Some("user")
+        ) {
+        let raw = message_text(item);
+        if is_slash_command(&raw) {
+            Some(raw.trim_start().to_string())
+        } else {
+            item_to_transcript(item)
+        }
+    } else {
+        item_to_transcript(item)
+    };
+    if let Some(mut text) = text {
+        if text.len() > MAX_TRANSCRIPT_CHARS {
+            let end = text.floor_char_boundary(MAX_TRANSCRIPT_CHARS);
+            text.truncate(end);
+            text.push_str("\n[truncated]");
+        }
+        prompt.push(json!({"type": "text", "text": text}));
+    }
+    if images && is_message {
+        prompt.extend(image_blocks(item));
+    }
 }
 
 #[derive(Default)]
@@ -366,18 +370,102 @@ impl Usage {
                 .and_then(Value::as_u64)
                 .unwrap_or(0)
         };
-        let input = get("inputTokens", "input_tokens");
+        let used = get("used", "used_tokens");
+        let mut input = get("inputTokens", "input_tokens");
         let output = get("outputTokens", "output_tokens");
-        let total = get("totalTokens", "total_tokens");
+        let mut total = get("totalTokens", "total_tokens");
+        let cached = [
+            "cached_tokens",
+            "cachedTokens",
+            "cachedReadTokens",
+            "cached_read_tokens",
+            "cacheReadInputTokens",
+            "cache_read_input_tokens",
+        ]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(Value::as_u64))
+        .or_else(|| {
+            v.pointer("/input_tokens_details/cached_tokens")
+                .and_then(Value::as_u64)
+        })
+        .unwrap_or(0);
         if input == 0 && output == 0 && total == 0 {
-            return None;
+            if used > 0 {
+                input = used;
+                total = used;
+            } else {
+                return None;
+            }
+        }
+        if cached > 0 && input < cached {
+            input = input.saturating_add(cached);
+        }
+        let mut extra = v.clone();
+        if cached > 0 {
+            if let Some(obj) = extra.as_object_mut() {
+                obj.insert("cached_tokens".to_string(), json!(cached));
+            } else {
+                extra = json!({"cached_tokens": cached});
+            }
         }
         Some(Usage {
             input_tokens: input,
             output_tokens: output,
             total_tokens: if total != 0 { total } else { input + output },
-            extra: v.clone(),
+            extra,
         })
+    }
+
+    pub fn cached_tokens(&self) -> u64 {
+        self.extra
+            .get("cached_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    }
+
+    pub fn set_cached_tokens(&mut self, cached: u64) {
+        if cached == 0 {
+            if let Some(obj) = self.extra.as_object_mut() {
+                obj.remove("cached_tokens");
+            }
+            return;
+        }
+        if let Some(obj) = self.extra.as_object_mut() {
+            obj.insert("cached_tokens".to_string(), json!(cached));
+        } else {
+            self.extra = json!({"cached_tokens": cached});
+        }
+    }
+
+    pub fn normalize_context(&mut self, calls: u64, context_used: Option<u64>) {
+        if calls <= 1 || self.input_tokens == 0 {
+            return;
+        }
+        let cached = self.cached_tokens();
+        if let Some(used) = context_used {
+            if used > 0 && self.input_tokens > used {
+                let scaled_cached = ((cached as u128 * used as u128) / self.input_tokens as u128)
+                    .min(used as u128) as u64;
+                self.input_tokens = used;
+                self.set_cached_tokens(scaled_cached);
+                self.total_tokens = self.input_tokens.saturating_add(self.output_tokens);
+                return;
+            }
+        }
+        let per_input = self.input_tokens / calls;
+        let per_cached = (cached / calls).min(per_input);
+        self.input_tokens = per_input;
+        self.set_cached_tokens(per_cached);
+        self.total_tokens = self.input_tokens.saturating_add(self.output_tokens);
+    }
+
+    pub fn merge_step(&mut self, next: Usage) {
+        let next_cached = next.cached_tokens();
+        self.input_tokens = next.input_tokens;
+        self.output_tokens = self.output_tokens.saturating_add(next.output_tokens);
+        self.total_tokens = self.input_tokens.saturating_add(self.output_tokens);
+        self.extra = next.extra;
+        self.set_cached_tokens(next_cached);
     }
 }
 
