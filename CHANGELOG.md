@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.2.33] - 2026-11-26
+
+### Fixed
+- **Login links open in full.** Long sign-in URLs wrap in the narrow login pane, so clicking one opened a truncated link. Ctrl+O now opens the complete URL, and the footer shows the key while a link is on screen.
+- **Switching accounts takes effect mid-conversation for ACP providers.** `gray-acp` gains `Driver::reusable`, so a provider such as Antigravity retires a running session whose account no longer matches the current pick instead of serving the next turn from the old account.
+- **The slash menu on the home screen fits its matches.** The dropdown below the input no longer pads itself with empty rows, and each command's description is cut to its first clause so usage syntax stays out of the menu.
+
+### Changed
+- **Bundle parts are picked with an arrow-key checklist.** `gray plugin install` for a bundle replaces the numbered prompt, which never showed the numbers, with an inline checklist: arrows move, space toggles, `a` toggles all, `d` restores the defaults, enter saves and esc cancels.
+
 ## [0.2.32] - 2026-11-25
 
 ### Fixed

@@ -307,7 +307,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         .saturating_sub(tui.terminal.viewport_area.y + status_h + box_h.saturating_sub(below_band));
     let home_drop = home_mode && !asking && home_room >= tui.matches.len().min(3) as u16;
     let panel_rows = if home_drop {
-        popup_rows(tui.matches.len(), home_room + 1)
+        popup_rows(tui.matches.len(), home_room + 1).min(tui.matches.len())
     } else {
         popup_rows(
             tui.matches.len(),
@@ -873,7 +873,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 let item_y = rows_y + (i - start) as u16;
                 let is_sel = i == tui.sel;
                 let cmd_str = format!(" /{name} ");
-                let desc_str = format!(" {desc} ");
+                let desc_str = format!(" {} ", brief(desc));
                 let swatch = theme_row_swatch(name);
                 let used_len = match_row_width(name, desc);
 
@@ -1231,7 +1231,24 @@ fn match_row_width(name: &str, desc: &str) -> usize {
             .map(|sp| display_width(sp.content.as_ref()))
             .sum::<usize>()
     });
-    display_width(&format!(" /{name} ")) + display_width(&format!(" {desc} ")) + swatch
+    display_width(&format!(" /{name} ")) + display_width(&format!(" {} ", brief(desc))) + swatch
+}
+
+fn brief(desc: &str) -> String {
+    const MAX: usize = 48;
+    let head = desc
+        .split([':', ';', '[', '<', '(', '—'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches([' ', ',', '.', '-']);
+    let head = if head.is_empty() { desc } else { head };
+    if head.chars().count() <= MAX {
+        return head.to_string();
+    }
+    let mut cut: String = head.chars().take(MAX - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    cut
 }
 
 fn theme_row_swatch(name: &str) -> Option<Vec<Span<'static>>> {
