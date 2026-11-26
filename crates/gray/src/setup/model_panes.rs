@@ -1356,11 +1356,15 @@ fn draw(frame: &mut Frame, bg: &BackgroundSnapshot, v: &PaneView) {
     let has_strip = v.strip_live;
     let portal_row = provider.is_some_and(|p| p.item.id == catalog::GRAY_PORTAL_ID);
     let keys = if let Some(pty) = v.pty {
-        if pty.exited() {
+        let mut keys = if pty.exited() {
             vec![("enter", "return", true), ("F2", "details", true)]
         } else {
             vec![("esc", "cancel", true), ("F2", "details", true)]
+        };
+        if !pty.exited() && pty.link().is_some() {
+            keys.insert(0, ("ctrl+o", "open link", true));
         }
+        keys
     } else if v.portal.is_some() {
         vec![("enter", "sign in", true), ("esc", "cancel", true)]
     } else if v.adding {
