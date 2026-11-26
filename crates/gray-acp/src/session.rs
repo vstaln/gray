@@ -81,6 +81,10 @@ pub trait Driver: Send + Sync {
     fn on_commands(&self, commands: &[SlashCommand]) {
         let _ = commands;
     }
+    fn reusable(&self, stage: &std::path::Path, model: &str) -> bool {
+        let _ = (stage, model);
+        true
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -189,6 +193,9 @@ pub fn run_turn(pool: &Arc<Pool>, raw: &[u8], cancel: &AtomicBool) -> Result<Vec
 
     let mut tail: Vec<Value> = Vec::new();
     if chosen.is_none() {
+        guard.retain(|_, s| {
+            s.mid_turn || s.model != prep.model || pool.driver.reusable(s._stage.path(), &s.model)
+        });
         for (key, s) in guard.iter() {
             if s.model != prep.model || s.mid_turn {
                 continue;

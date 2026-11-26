@@ -139,7 +139,23 @@ impl PtyPane {
         self.send(&bytes);
     }
 
+    pub(crate) fn link(&self) -> Option<String> {
+        let contents = self.parser.lock().ok()?.screen().contents();
+        let start = contents.rfind("https://")?;
+        let url: String = contents[start..]
+            .chars()
+            .take_while(|c| !c.is_whitespace())
+            .collect();
+        Some(url)
+    }
+
     pub(crate) fn key(&mut self, key: KeyEvent) -> PtyKey {
+        if key.code == KeyCode::Char('o') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if let Some(url) = self.link() {
+                crate::util::open_in_browser(&url);
+            }
+            return PtyKey::Stay;
+        }
         if key.code == KeyCode::F(2) {
             self.details = !self.details;
             return PtyKey::Stay;
