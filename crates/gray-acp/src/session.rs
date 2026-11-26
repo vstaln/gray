@@ -674,6 +674,9 @@ fn drive_inner(
             Wire::Bad => {}
             Wire::Notification { method, params } => {
                 if method == "session/update" {
+                    if let Some(used) = context_used(&params) {
+                        session.last_context_used = Some(used);
+                    }
                     let cut = handle_update(
                         &params,
                         pool,
@@ -682,7 +685,6 @@ fn drive_inner(
                         &mut thought_acc,
                         &flush_text,
                         turn_guard,
-                        &mut session.last_context_used,
                     );
                     if let Some(m) = cut {
                         eprintln!(
@@ -794,6 +796,18 @@ fn handle_agent_request(
     }
 }
 
+fn context_used(params: &Value) -> Option<u64> {
+    let update = params.get("update")?;
+    if update.get("sessionUpdate").and_then(Value::as_str) != Some("usage_update") {
+        return None;
+    }
+    let u = update.get("usage").unwrap_or(update);
+    u.get("used")
+        .or_else(|| u.get("used_tokens"))
+        .and_then(Value::as_u64)
+        .filter(|&n| n > 0)
+}
+
 fn handle_update(
     params: &Value,
     pool: &Pool,
@@ -802,7 +816,6 @@ fn handle_update(
     thought_acc: &mut String,
     flush_text: &dyn Fn(&mut TurnResult, &mut String),
     turn_guard: &mut TurnGuard,
-    last_context_used: &mut Option<u64>,
 ) -> Option<&'static str> {
     let update = params.get("update")?;
     let kind = update
@@ -833,18 +846,8 @@ fn handle_update(
             }
         }
         "usage_update" => {
-            if let Some(u) = update.get("usage").or(Some(update)) {
-                if let Some(used) = u
-                    .get("used")
-                    .or_else(|| u.get("used_tokens"))
-                    .and_then(Value::as_u64)
-                    .filter(|&n| n > 0)
-                {
-                    *last_context_used = Some(used);
-                }
-                if let Some(usage) = chat::Usage::from_acp(u) {
-                    result.usage = Some(usage);
-                }
+            if let Some(usage) = chat::Usage::from_acp(update.get("usage").unwrap_or(update)) {
+                result.usage = Some(usage);
             }
         }
         "available_commands_update" => {

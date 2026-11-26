@@ -442,15 +442,16 @@ impl Usage {
             return;
         }
         let cached = self.cached_tokens();
-        if let Some(used) = context_used {
-            if used > 0 && self.input_tokens > used {
-                let scaled_cached = ((cached as u128 * used as u128) / self.input_tokens as u128)
-                    .min(used as u128) as u64;
-                self.input_tokens = used;
-                self.set_cached_tokens(scaled_cached);
-                self.total_tokens = self.input_tokens.saturating_add(self.output_tokens);
-                return;
-            }
+        if let Some(used) = context_used
+            && used > 0
+            && self.input_tokens > used
+        {
+            let scaled_cached = ((cached as u128 * used as u128) / self.input_tokens as u128)
+                .min(used as u128) as u64;
+            self.input_tokens = used;
+            self.set_cached_tokens(scaled_cached);
+            self.total_tokens = self.input_tokens.saturating_add(self.output_tokens);
+            return;
         }
         let per_input = self.input_tokens / calls;
         let per_cached = (cached / calls).min(per_input);
