@@ -438,7 +438,7 @@ impl Usage {
     }
 
     pub fn normalize_context(&mut self, calls: u64, context_used: Option<u64>) {
-        if calls <= 1 || self.input_tokens == 0 {
+        if self.input_tokens == 0 {
             return;
         }
         let cached = self.cached_tokens();
@@ -451,6 +451,9 @@ impl Usage {
             self.input_tokens = used;
             self.set_cached_tokens(scaled_cached);
             self.total_tokens = self.input_tokens.saturating_add(self.output_tokens);
+            return;
+        }
+        if calls <= 1 {
             return;
         }
         let per_input = self.input_tokens / calls;
