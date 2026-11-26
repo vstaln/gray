@@ -231,51 +231,184 @@ pub fn print_parts(home: &Path, target: &str) -> anyhow::Result<()> {
 }
 
 fn pick_parts(bundle: &str, parts: &[PartInfo]) -> anyhow::Result<Option<BTreeMap<String, bool>>> {
-    use std::io::{BufRead, Write};
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+    use crossterm::terminal;
     let mut on: Vec<bool> = parts.iter().map(|p| p.enabled).collect();
-    println!(
-        "{bundle} is made of {} parts — pick the ones to turn on:",
-        parts.len()
-    );
-    let stdin = std::io::stdin();
-    loop {
-        for (i, p) in parts.iter().enumerate() {
-            println!(
-                "  [{}] {}  {}",
-                if on[i] { "x" } else { " " },
-                p.name,
-                p.description
-            );
-        }
-        print!("  numbers to toggle, e.g. 1,3 (enter = keep as shown, q = cancel): ");
-        std::io::stdout().flush().ok();
-        let mut line = String::new();
-        if stdin.lock().read_line(&mut line)? == 0 {
-            break;
-        }
-        let text = line.trim();
-        if text == "q" || text == "quit" {
-            return Ok(None);
-        }
-        if text.is_empty() {
-            break;
-        }
-        for token in text.split(|c: char| c == ',' || c.is_whitespace()) {
-            let Ok(n) = token.parse::<usize>() else {
+    let mut cursor = 0usize;
+    let mut top = 0usize;
+    let mut drawn = 0u16;
+    let mut out = std::io::stdout();
+    terminal::enable_raw_mode()?;
+    let mut run = || -> std::io::Result<Option<()>> {
+        loop {
+            let (cols, rows) = terminal::size().unwrap_or((80, 24));
+            let view = (rows.saturating_sub(4) as usize).max(3).min(parts.len());
+            if cursor < top {
+                top = cursor;
+            } else if cursor >= top + view {
+                top = cursor + 1 - view;
+            }
+            drawn = draw_parts(&mut out, bundle, parts, &on, cursor, top, view, cols, drawn)?;
+            let Event::Key(key) = event::read()? else {
                 continue;
             };
-            if n >= 1 && n <= parts.len() {
-                on[n - 1] = !on[n - 1];
+            if key.kind == KeyEventKind::Release {
+                continue;
+            }
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                KeyCode::Char('c') if ctrl => return Ok(None),
+                KeyCode::Esc | KeyCode::Char('q') => return Ok(None),
+                KeyCode::Enter => return Ok(Some(())),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    cursor = cursor.checked_sub(1).unwrap_or(parts.len() - 1)
+                }
+                KeyCode::Down | KeyCode::Char('j') => cursor = (cursor + 1) % parts.len(),
+                KeyCode::PageUp => cursor = cursor.saturating_sub(view),
+                KeyCode::PageDown => cursor = (cursor + view).min(parts.len() - 1),
+                KeyCode::Home | KeyCode::Char('g') => cursor = 0,
+                KeyCode::End | KeyCode::Char('G') => cursor = parts.len() - 1,
+                KeyCode::Char(' ') | KeyCode::Char('x') => on[cursor] = !on[cursor],
+                KeyCode::Char('a') => {
+                    let all = on.iter().all(|v| *v);
+                    on.iter_mut().for_each(|v| *v = !all);
+                }
+                KeyCode::Char('d') => {
+                    for (v, p) in on.iter_mut().zip(parts) {
+                        *v = p.default;
+                    }
+                }
+                _ => {}
             }
         }
-    }
-    Ok(Some(
+    };
+    let result = run();
+    let _ = clear_drawn(&mut out, drawn);
+    terminal::disable_raw_mode()?;
+    let result = result?;
+    Ok(result.map(|()| {
         parts
             .iter()
             .zip(&on)
             .map(|(p, on)| (p.name.clone(), *on))
-            .collect(),
-    ))
+            .collect()
+    }))
+}
+
+fn clear_drawn(out: &mut std::io::Stdout, drawn: u16) -> std::io::Result<()> {
+    use crossterm::{cursor, queue, terminal};
+    use std::io::Write;
+    queue!(out, cursor::MoveToColumn(0))?;
+    if drawn > 1 {
+        queue!(out, cursor::MoveUp(drawn - 1))?;
+    }
+    queue!(out, terminal::Clear(terminal::ClearType::FromCursorDown))?;
+    out.flush()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_parts(
+    out: &mut std::io::Stdout,
+    bundle: &str,
+    parts: &[PartInfo],
+    on: &[bool],
+    cursor: usize,
+    top: usize,
+    view: usize,
+    cols: u16,
+    drawn: u16,
+) -> std::io::Result<u16> {
+    use crossterm::queue;
+    use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
+    use std::io::Write;
+    clear_drawn(out, drawn)?;
+    let width = cols.saturating_sub(1) as usize;
+    let fit = |text: String| -> String {
+        if text.chars().count() <= width {
+            text
+        } else {
+            let mut cut: String = text.chars().take(width.saturating_sub(1)).collect();
+            cut.push('…');
+            cut
+        }
+    };
+    let name_w = parts
+        .iter()
+        .map(|p| p.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let count = on.iter().filter(|v| **v).count();
+    let mut lines = 0u16;
+    let newline = |out: &mut std::io::Stdout, lines: &mut u16| -> std::io::Result<()> {
+        if *lines > 0 {
+            queue!(out, Print("\r\n"))?;
+        }
+        *lines += 1;
+        Ok(())
+    };
+    newline(out, &mut lines)?;
+    let header = fit(format!(" {bundle} · {count} of {} parts on", parts.len()));
+    let split = (bundle.chars().count() + 1).min(header.chars().count());
+    queue!(
+        out,
+        SetAttribute(Attribute::Bold),
+        Print(header.chars().take(split).collect::<String>()),
+        SetAttribute(Attribute::Reset),
+        SetForegroundColor(Color::DarkGrey),
+        Print(header.chars().skip(split).collect::<String>()),
+        ResetColor
+    )?;
+    for i in top..(top + view).min(parts.len()) {
+        newline(out, &mut lines)?;
+        let p = &parts[i];
+        let here = i == cursor;
+        let mark = if on[i] { "◉" } else { "○" };
+        let pointer = if here { "›" } else { " " };
+        let head = format!(" {pointer} {mark} {:<name_w$}  ", p.name);
+        let line = fit(format!("{head}{}", p.description));
+        let split = head.chars().count().min(line.chars().count());
+        let (left, right): (String, String) = (
+            line.chars().take(split).collect(),
+            line.chars().skip(split).collect(),
+        );
+        if here {
+            queue!(out, SetAttribute(Attribute::Bold))?;
+        }
+        queue!(
+            out,
+            SetForegroundColor(if here || on[i] {
+                Color::Reset
+            } else {
+                Color::DarkGrey
+            }),
+            Print(left),
+            SetAttribute(Attribute::Reset),
+            SetForegroundColor(Color::DarkGrey),
+            Print(right),
+            ResetColor
+        )?;
+    }
+    newline(out, &mut lines)?;
+    let more = if parts.len() > view {
+        format!(
+            " · {}–{} of {}",
+            top + 1,
+            (top + view).min(parts.len()),
+            parts.len()
+        )
+    } else {
+        String::new()
+    };
+    queue!(
+        out,
+        SetForegroundColor(Color::DarkGrey),
+        Print(fit(format!(
+            " ↑↓ move · space toggle · a all · d defaults · enter save · esc cancel{more}"
+        ))),
+        ResetColor
+    )?;
+    out.flush()?;
+    Ok(lines)
 }
 
 fn write_parts(
@@ -289,20 +422,25 @@ fn write_parts(
     if !announce {
         return Ok(());
     }
-    let on: Vec<&str> = parts
+    let (on, off): (Vec<&PartInfo>, Vec<&PartInfo>) = parts
         .iter()
-        .filter(|p| chosen.get(&p.name).copied().unwrap_or(false))
-        .map(|p| p.name.as_str())
-        .collect();
+        .partition(|p| chosen.get(&p.name).copied().unwrap_or(false));
+    let names = |list: &[&PartInfo]| {
+        list.iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let detail = match (on.len(), off.len()) {
+        (_, 0) => String::new(),
+        (0, _) => String::new(),
+        (n, m) if m <= n => format!(" (off: {})", names(&off)),
+        _ => format!(" (on: {})", names(&on)),
+    };
     println!(
-        "{bundle}: {} of {} parts on ({}) — applies to new sessions",
+        "{bundle}: {} of {} parts on{detail} — applies to new sessions",
         on.len(),
         parts.len(),
-        if on.is_empty() {
-            "none".to_string()
-        } else {
-            on.join(", ")
-        }
     );
     let _ = home;
     Ok(())
