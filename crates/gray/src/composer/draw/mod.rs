@@ -441,7 +441,23 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         );
         let w = area.width as usize;
 
-        let status_y = area.y;
+        let visible_count = panel_rows;
+        let drawn_count = if visible_count > 0 {
+            let start = tui
+                .sel
+                .saturating_sub(visible_count.saturating_sub(1))
+                .min(tui.sel);
+            let end = (start + visible_count).min(tui.matches.len());
+            end.saturating_sub(start)
+        } else {
+            0
+        };
+        let unused_panel = if visible_count > 0 && !home_drop {
+            visible_count.saturating_sub(drawn_count) as u16
+        } else {
+            0
+        };
+        let status_y = area.y + unused_panel;
 
         let mut queued_preview: Vec<Line<'static>> =
             queued_preview_lines(&tui.queued_inputs, &tui.queued_sends, w);
@@ -508,9 +524,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         let ask_h = rows_h[0];
         let widget_h = rows_h[2];
 
-        let visible_count = panel_rows;
         let panel_gap: u16 = if visible_count > 0 && !home_drop {
-            visible_count as u16 + 1
+            drawn_count as u16 + 1
         } else if visible_count > 0 {
             0
         } else {
@@ -820,7 +835,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 .min(area.width.saturating_sub(4))
                 .max(30);
             let inner_w = (pop_w - pad_x * 2) as usize;
-            let pop_h = visible_count as u16;
+            let pop_h = drawn_count as u16;
             let pop_x = (area.x + ibox.x as u16).min(area.right().saturating_sub(pop_w));
             let pop_y = if home_drop {
                 (box_y + (ibox.lead_h + ibox.band_h) as u16)
@@ -829,11 +844,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 box_y.saturating_sub(pop_h).max(area.y)
             };
             let rect = Rect::new(pop_x, pop_y, pop_w, pop_h);
-            let rows_y = if home_drop {
-                pop_y
-            } else {
-                pop_y + (visible_count - (end - start)) as u16
-            };
+            let rows_y = pop_y;
             if home_drop {
                 // Blank the home rows the dropdown covers, edge to edge, so
                 // no half-hidden model/hint text pokes out beside it.
