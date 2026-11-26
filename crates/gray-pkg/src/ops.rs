@@ -220,6 +220,16 @@ fn replace_archive(
     backup: bool,
     record: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<PathBuf> {
+    replace_archive_opts(archive, name, backup, false, record)
+}
+
+fn replace_archive_opts(
+    archive: &Path,
+    name: &str,
+    backup: bool,
+    strip_top: bool,
+    record: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<PathBuf> {
     validate_install_key(name)?;
     anyhow::ensure!(
         !matches!(
@@ -234,7 +244,7 @@ fn replace_archive(
     let next = stage.path().join("next");
     let previous = stage.path().join("previous");
     std::fs::create_dir(&next)?;
-    let unpacked = crate::fetch::unpack_tar_gz(archive, &next);
+    let unpacked = crate::fetch::unpack_tar_gz_stripped(archive, &next, strip_top);
     let _ = std::fs::remove_file(archive);
     unpacked?;
     let dest = root.join(name);
@@ -420,6 +430,101 @@ async fn install_index(
     })
 }
 
+fn github_tarball_url(url: &str) -> Option<(String, String)> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("github.com") {
+        return None;
+    }
+    let segs: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
+    let (owner, raw_repo) = match segs.as_slice() {
+        [owner, repo] => (*owner, *repo),
+        [owner, repo, "tree", ..] => (*owner, *repo),
+        _ => return None,
+    };
+    let repo = raw_repo.strip_suffix(".git").unwrap_or(raw_repo);
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    let tarball = if segs.len() > 3 && segs[2] == "tree" {
+        let git_ref = segs[3..].join("/");
+        format!("https://api.github.com/repos/{owner}/{repo}/tarball/{git_ref}")
+    } else {
+        format!("https://api.github.com/repos/{owner}/{repo}/tarball")
+    };
+    Some((repo.to_string(), tarball))
+}
+
+fn skills_dir() -> Option<PathBuf> {
+    crate::plugins_dir().parent().map(|p| p.join("skills"))
+}
+
+fn sync_claude_skills(plugin_dir: &Path) -> anyhow::Result<()> {
+    let src_root = plugin_dir.join("skills");
+    if !src_root.is_dir() {
+        return Ok(());
+    }
+    let Some(dst_root) = skills_dir() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(&dst_root)?;
+    for entry in std::fs::read_dir(&src_root)? {
+        let entry = entry?;
+        let src = entry.path();
+        if !src.is_dir() || !src.join("SKILL.md").is_file() {
+            continue;
+        }
+        let dst = dst_root.join(entry.file_name());
+        if let Ok(meta) = std::fs::symlink_metadata(&dst) {
+            if meta.file_type().is_symlink() {
+                let _ = std::fs::remove_file(&dst);
+            } else {
+                continue;
+            }
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&src, &dst)?;
+        }
+        #[cfg(not(unix))]
+        {
+            copy_dir_all(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
+        } else if ty.is_file() {
+            std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+fn unlink_plugin_skills(plugin_dir: &Path) {
+    let Some(dst_root) = skills_dir() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&dst_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if let Ok(target) = std::fs::read_link(&path)
+            && target.starts_with(plugin_dir)
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 async fn install_url(
     client: &reqwest::Client,
     url: &str,
@@ -429,7 +534,10 @@ async fn install_url(
         "warning: unverified install from {} (no index hash; use an index name for verified installs)",
         crate::fetch::redact(url)
     );
-    let name = name_from_url(url);
+    let (name, download_url, strip_top) = match github_tarball_url(url) {
+        Some((repo, tarball)) => (repo, tarball, true),
+        None => (name_from_url(url), url.to_string(), false),
+    };
     if name.is_empty() {
         anyhow::bail!(
             "cannot derive a plugin name from URL: {}",
@@ -437,10 +545,29 @@ async fn install_url(
         );
     }
     validate_install_key(&name)?;
-    let archive = crate::fetch::download(client, url, None).await?;
-    let dest = replace_archive(&archive, &name, false, || {
+    let archive = crate::fetch::download(client, &download_url, None).await?;
+    let mut installed_version = "0.0.0".to_string();
+    let mut installed_description = None;
+    let dest = replace_archive_opts(&archive, &name, false, strip_top, || {
+        let plugin_dir = crate::plugins_dir().join(&name);
+        if opts.argv.is_empty()
+            && let Some(cm) = gray_plugin::claude_code::read_manifest(&plugin_dir)
+        {
+            sync_claude_skills(&plugin_dir)?;
+            installed_version = cm.version.clone();
+            installed_description = cm.description.clone();
+            return record_install(
+                &name,
+                gray_plugin::claude_code::ECOSYSTEM,
+                &cm.version,
+                "",
+                url,
+                opts.scope.clone().unwrap_or_else(|| "user".to_string()),
+                Vec::new(),
+            );
+        }
         if opts.argv.is_empty() {
-            gray_plugin::builder::resolve_argv(&crate::plugins_dir().join(&name)).map_err(|e| {
+            gray_plugin::builder::resolve_argv(&plugin_dir).map_err(|e| {
                 anyhow::anyhow!("package '{name}' has no runnable plugin on this platform: {e:#}")
             })?;
         }
@@ -456,10 +583,10 @@ async fn install_url(
     })?;
     Ok(Report {
         name,
-        version: "0.0.0".to_string(),
+        version: installed_version,
         path: dest,
         deps: Vec::new(),
-        description: None,
+        description: installed_description,
     })
 }
 
@@ -486,6 +613,7 @@ fn remove_inner(name: &str) -> anyhow::Result<()> {
 
     write_lock(&lock)?;
     let dir = crate::plugins_dir().join(name);
+    unlink_plugin_skills(&dir);
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }

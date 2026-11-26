@@ -26,6 +26,52 @@ pub(crate) fn sync_attachment_markers(tui: &mut Tui) {
     });
 }
 
+pub(crate) fn restore_attachment_chips(tui: &mut Tui) {
+    let mut paths: Vec<_> = tui.attachments.iter().collect();
+    for (range, name) in crate::repl::attachments::attachment_markers(tui.textarea.text()) {
+        if let Some(idx) = paths
+            .iter()
+            .position(|p| crate::repl::attachments::attachment_label(p) == name)
+        {
+            paths.swap_remove(idx);
+            tui.textarea.mark_element(range);
+        }
+    }
+}
+
+pub(crate) fn attachments_ready(tui: &mut Tui, text: &str) -> bool {
+    sync_attachment_markers(tui);
+    if let Some(path) = tui.attachments.iter().find(|path| !path.is_file()) {
+        let name = crate::repl::attachments::attachment_label(path);
+        tui.set_hint(&format!("Attachment is missing: {name}"));
+        let _ = tui.draw();
+        return false;
+    }
+    let mut paths: Vec<_> = tui.attachments.iter().collect();
+    for (_, name) in crate::repl::attachments::attachment_markers(text) {
+        if !name
+            .strip_prefix("clipboard-")
+            .and_then(|name| name.strip_suffix(".png"))
+            .is_some_and(|id| id.len() == 6 && id.bytes().all(|b| b.is_ascii_alphanumeric()))
+        {
+            continue;
+        }
+        if let Some(idx) = paths
+            .iter()
+            .position(|p| crate::repl::attachments::attachment_label(p) == name)
+        {
+            paths.swap_remove(idx);
+        } else {
+            tui.set_hint(
+                "Clipboard image is missing. Remove the filename and paste the image again.",
+            );
+            let _ = tui.draw();
+            return false;
+        }
+    }
+    true
+}
+
 pub(crate) const MAX_ATTACH_FILE_BYTES: u64 = 100 * 1024 * 1024;
 
 fn decoded_paste_path(raw: &str) -> String {
@@ -46,6 +92,15 @@ fn decoded_paste_path(raw: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+fn clipboard_tempfile() -> std::io::Result<tempfile::NamedTempFile> {
+    let dir = gray_core::paths::gray_home_or_temp().join("attachments");
+    std::fs::create_dir_all(&dir)?;
+    tempfile::Builder::new()
+        .prefix("clipboard-")
+        .suffix(".png")
+        .tempfile_in(dir)
 }
 
 fn file_size_exceeds(path: &Path, limit: u64) -> bool {
@@ -86,7 +141,7 @@ pub(crate) fn try_attach_image_paste(tui: &mut Tui, pasted: &str) -> bool {
         return true;
     }
     if is_attachable_path(&path_str) {
-        let path = PathBuf::from(path_str);
+        let path = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
         attach_image(tui, path);
         return true;
     }
@@ -107,13 +162,7 @@ exit 1";
 /// Returns the path when an image was actually saved.
 #[cfg(target_os = "windows")]
 fn windows_clipboard_image() -> Option<PathBuf> {
-    let (file, path) = tempfile::Builder::new()
-        .prefix("clipboard-")
-        .suffix(".png")
-        .tempfile()
-        .ok()?
-        .keep()
-        .ok()?;
+    let (file, path) = clipboard_tempfile().ok()?.keep().ok()?;
     drop(file);
     // An absent file afterwards means the clipboard held no image.
     let _ = std::fs::remove_file(&path);
@@ -160,10 +209,7 @@ pub(crate) fn try_attach_clipboard_image(tui: &mut Tui) -> bool {
             &args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
         ) && !out.stdout.is_empty()
             && out.status.success()
-            && let Ok(mut tmp) = tempfile::Builder::new()
-                .prefix("clipboard-")
-                .suffix(".png")
-                .tempfile()
+            && let Ok(mut tmp) = clipboard_tempfile()
             && std::io::Write::write_all(&mut tmp, &out.stdout).is_ok()
             && let Ok((_file, path)) = tmp.keep()
         {

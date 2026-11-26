@@ -111,6 +111,12 @@ fn drain_say_entries(entries: Vec<SayEntry>) -> Vec<SayBlock> {
         match e {
             SayEntry::Crash(c) => crashes.push(c),
             SayEntry::Card(title, text) => {
+                if title == "Recap" {
+                    if !crate::presence::recap_fresh() {
+                        continue;
+                    }
+                    crate::presence::mark_recap_shown();
+                }
                 if !crashes.is_empty() {
                     out.push(SayBlock::Lines(vec![crash_notice_line(std::mem::take(
                         &mut crashes,

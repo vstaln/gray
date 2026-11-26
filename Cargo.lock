@@ -939,6 +939,7 @@ name = "gray-acp"
 version = "0.2.33"
 dependencies = [
  "anyhow",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

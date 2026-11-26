@@ -15,9 +15,16 @@ const PARK_QUIESCE: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 const REAPER_TICK: Duration = Duration::from_secs(30);
 const UPDATE_WAIT: Duration = Duration::from_millis(250);
+const CANCEL_GRACE: Duration = Duration::from_millis(500);
 
 pub trait Driver: Send + Sync {
     fn spawn_spec(&self, stage: &std::path::Path) -> SpawnSpec;
+    fn session_cwd(&self, stage: &std::path::Path) -> std::path::PathBuf {
+        stage.to_path_buf()
+    }
+    fn session_mcp_servers(&self, _init: &Value, servers: Value) -> Value {
+        servers
+    }
     fn auth_method_id(&self) -> Option<&'static str>;
     fn client_info(&self) -> (&'static str, &'static str);
     fn session_mode(&self) -> Option<&'static str> {
@@ -113,6 +120,9 @@ pub struct Session {
     parked: HashMap<String, Parked>,
     mid_turn: bool,
     prompt_rx: Option<std::sync::mpsc::Receiver<Value>>,
+    queued_prompt: Vec<Value>,
+    prompt_calls: u64,
+    last_context_used: Option<u64>,
     model: String,
     dead: bool,
     prompt_seq: u64,
@@ -136,13 +146,16 @@ impl Pool {
             commands: Mutex::new(Vec::new()),
             driver,
         });
-        let p = pool.clone();
+        let p = Arc::downgrade(&pool);
         std::thread::Builder::new()
             .name("acp-sub-reaper".into())
             .spawn(move || {
                 loop {
                     std::thread::sleep(REAPER_TICK);
-                    if let Ok(mut sessions) = p.sessions.lock() {
+                    let Some(pool) = p.upgrade() else {
+                        break;
+                    };
+                    if let Ok(mut sessions) = pool.sessions.lock() {
                         sessions.retain(|_, s| {
                             if s.mid_turn {
                                 return true;
@@ -171,6 +184,9 @@ pub fn run_turn(pool: &Arc<Pool>, raw: &[u8], cancel: &AtomicBool) -> Result<Vec
     let mut prep = chat::prepare_turn(&body, &model_hint)?;
 
     let mut guard = pool.sessions.lock().map_err(|_| "pool lock".to_string())?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err("turn cancelled by client".to_string());
+    }
 
     let mut chosen: Option<String> = None;
     let mut resume_tail: Vec<Value> = Vec::new();
@@ -227,6 +243,9 @@ pub fn run_turn(pool: &Arc<Pool>, raw: &[u8], cancel: &AtomicBool) -> Result<Vec
             }
             let key = format!("sess-{}", chat::rand_hex(8));
             let session = spawn_session(&*pool.driver, &prep)?;
+            if cancel.load(Ordering::SeqCst) {
+                return Err("turn cancelled by client".to_string());
+            }
             guard.insert(key.clone(), session);
             tail = prep.input.clone();
             key
@@ -296,8 +315,8 @@ fn spawn_session(driver: &dyn Driver, prep: &PreparedTurn) -> Result<Session, St
         .unwrap_or(false);
     let sess = client
         .session_new_with_meta(
-            &stage.path().to_string_lossy(),
-            mcp_servers,
+            &driver.session_cwd(stage.path()).to_string_lossy(),
+            driver.session_mcp_servers(&init, mcp_servers),
             meta.unwrap_or(Value::Null),
         )
         .map_err(|e| format!("session/new: {e}"))?;
@@ -330,6 +349,9 @@ fn spawn_session(driver: &dyn Driver, prep: &PreparedTurn) -> Result<Session, St
         parked: HashMap::new(),
         mid_turn: false,
         prompt_rx: None,
+        queued_prompt: Vec::new(),
+        prompt_calls: 0,
+        last_context_used: None,
         model: prep.model.clone(),
         dead: false,
         prompt_seq: 0,
@@ -397,6 +419,8 @@ fn drive(
     let mut turn_guard = TurnGuard::default();
     let mut r = drive_inner(session, pool, prep, cancel, fresh, &mut turn_guard)?;
     guard::clean_items(&mut r.items);
+    r.items
+        .sort_by_key(|item| !matches!(item, OutItem::Reasoning { .. }));
     if !session.mid_turn {
         let (call_ids, text) = chat::reply_signature(&r);
         session.reply_call_ids = call_ids;
@@ -419,7 +443,6 @@ fn drive_inner(
         ..Default::default()
     };
     let mut prompt_rx = session.prompt_rx.take();
-    let mut queued_prompt: Vec<Value> = Vec::new();
 
     if session.mid_turn {
         let mut saw_output = false;
@@ -441,16 +464,16 @@ fn drive_inner(
                     p.call.resolve(output);
                     saw_output = true;
                 } else if !chat::assistant_side(item) {
-                    queued_prompt.push(json!({"type":"text",
+                    session.queued_prompt.push(json!({"type":"text",
                         "text": format!("Tool result for {call_id}: {output}")}));
                 }
-            } else if !chat::assistant_side(item)
-                && let Some(text) = chat::item_to_transcript_pub(item)
-            {
-                queued_prompt.push(json!({"type": "text", "text": text}));
+            } else if !chat::assistant_side(item) {
+                chat::append_prompt_item(&mut session.queued_prompt, item, session.images);
             }
         }
-        let _ = saw_output;
+        if saw_output {
+            session.prompt_calls = session.prompt_calls.saturating_add(1);
+        }
     } else {
         let mut prompt_blocks: Vec<Value> = Vec::new();
         if std::mem::take(&mut session.prior_cut) && !fresh {
@@ -482,6 +505,8 @@ fn drive_inner(
         }
         if !prompt_blocks.is_empty() {
             session.prompt_seq += 1;
+            session.prompt_calls = 1;
+            session.last_context_used = None;
             let meta = driver.prompt_meta(session.prompt_seq);
             let (_id, rx) = session
                 .client
@@ -521,8 +546,11 @@ fn drive_inner(
     loop {
         if cancel.load(Ordering::SeqCst) {
             session.client.cancel(&session.session_id);
-            session.mid_turn = false;
             fail_parked(session, "interrupted");
+            if let Some(rx) = &prompt_rx {
+                let _ = rx.recv_timeout(CANCEL_GRACE);
+            }
+            session.dead = true;
             return Err("turn cancelled by client".to_string());
         }
 
@@ -579,21 +607,28 @@ fn drive_inner(
                         .and_then(Value::as_str)
                         .unwrap_or("end_turn")
                         .to_string();
-                    if let Some(u) = msg
+                    if let Some(mut u) = msg
                         .get("result")
                         .and_then(|r| r.get("usage"))
                         .and_then(|u| driver.usage(u))
                     {
-                        result.usage = Some(u);
+                        u.normalize_context(session.prompt_calls.max(1), session.last_context_used);
+                        if let Some(existing) = &mut result.usage {
+                            existing.merge_step(u);
+                        } else {
+                            result.usage = Some(u);
+                        }
                     }
                     result.stop_reason = stop;
                     let _ = prompt_rx.take();
-                    if !queued_prompt.is_empty() {
+                    if !session.queued_prompt.is_empty() {
                         session.prompt_seq += 1;
+                        session.prompt_calls = 1;
+                        session.last_context_used = None;
                         let meta = driver.prompt_meta(session.prompt_seq);
                         match session.client.prompt(
                             &session.session_id.clone(),
-                            Value::Array(std::mem::take(&mut queued_prompt)),
+                            Value::Array(std::mem::take(&mut session.queued_prompt)),
                             meta,
                         ) {
                             Ok((_id, rx)) => {
@@ -639,6 +674,9 @@ fn drive_inner(
             Wire::Bad => {}
             Wire::Notification { method, params } => {
                 if method == "session/update" {
+                    if let Some(used) = context_used(&params) {
+                        session.last_context_used = Some(used);
+                    }
                     let cut = handle_update(
                         &params,
                         pool,
@@ -684,6 +722,8 @@ fn drive_inner(
 
 fn finish_turn(session: &mut Session, result: &mut TurnResult, prep: &mut PreparedTurn) {
     session.mid_turn = false;
+    session.prompt_calls = 0;
+    session.last_context_used = None;
     session.last_used = Instant::now();
     session.absorbed = prep.input.clone();
     let (call_ids, text) = chat::reply_signature(result);
@@ -756,6 +796,18 @@ fn handle_agent_request(
     }
 }
 
+fn context_used(params: &Value) -> Option<u64> {
+    let update = params.get("update")?;
+    if update.get("sessionUpdate").and_then(Value::as_str) != Some("usage_update") {
+        return None;
+    }
+    let u = update.get("usage").unwrap_or(update);
+    u.get("used")
+        .or_else(|| u.get("used_tokens"))
+        .and_then(Value::as_u64)
+        .filter(|&n| n > 0)
+}
+
 fn handle_update(
     params: &Value,
     pool: &Pool,
@@ -794,9 +846,7 @@ fn handle_update(
             }
         }
         "usage_update" => {
-            if let Some(u) = update.get("usage").or(Some(update))
-                && let Some(usage) = chat::Usage::from_acp(u)
-            {
+            if let Some(usage) = chat::Usage::from_acp(update.get("usage").unwrap_or(update)) {
                 result.usage = Some(usage);
             }
         }

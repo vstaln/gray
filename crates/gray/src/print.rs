@@ -270,9 +270,12 @@ pub async fn run_print_mode_json(
     input_price: Option<f64>,
     output_price: Option<f64>,
 ) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let inline = crate::repl::attachments::extract_inline_image_paths(prompt, &cwd);
+    let msg = crate::repl::build_user_message_with_attachments(prompt, &inline);
     run_print_mode_json_message(
         config,
-        Message::user(prompt),
+        msg,
         session,
         continue_last,
         max_requests,

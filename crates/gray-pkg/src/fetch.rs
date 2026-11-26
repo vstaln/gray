@@ -7,6 +7,7 @@ pub const MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 pub fn client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
+        .user_agent(concat!("gray-pkg/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if check_url(attempt.url().as_str()).is_ok() {
                 attempt.follow()
@@ -154,6 +155,10 @@ fn confined(dest: &Path, rel: &Path) -> bool {
 }
 
 pub fn unpack_tar_gz(archive: &Path, dest: &Path) -> anyhow::Result<()> {
+    unpack_tar_gz_stripped(archive, dest, false)
+}
+
+pub fn unpack_tar_gz_stripped(archive: &Path, dest: &Path, strip_top: bool) -> anyhow::Result<()> {
     use std::io::Read as _;
     const MAX_OUT: u64 = 256 * 1024 * 1024;
     const MAX_ENTRIES: usize = 10_000;
@@ -165,16 +170,40 @@ pub fn unpack_tar_gz(archive: &Path, dest: &Path) -> anyhow::Result<()> {
         anyhow::ensure!(index < MAX_ENTRIES, "too many archive entries");
         let mut entry = entry?;
         let kind = entry.header().entry_type();
+        if kind.is_pax_global_extensions() || kind.is_pax_local_extensions() {
+            continue;
+        }
         anyhow::ensure!(kind.is_file() || kind.is_dir(), "unsupported archive entry");
         total = total
             .checked_add(entry.size())
             .ok_or_else(|| anyhow::anyhow!("archive size overflow"))?;
         anyhow::ensure!(total <= MAX_OUT, "tar archive exceeds output cap");
-        let path = entry.path()?.into_owned();
+        let raw_path = entry.path()?.into_owned();
+        let path = if strip_top {
+            let stripped: PathBuf = raw_path.components().skip(1).collect();
+            if stripped.as_os_str().is_empty() {
+                continue;
+            }
+            stripped
+        } else {
+            raw_path
+        };
         if unsafe_entry_name(&path.to_string_lossy()) || !confined(dest, &path) {
             anyhow::bail!("refusing unsafe archive entry: {}", path.display());
         }
-        entry.unpack_in(dest)?;
+        if strip_top {
+            let target = dest.join(&path);
+            if kind.is_dir() {
+                std::fs::create_dir_all(&target)?;
+            } else {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                entry.unpack(&target)?;
+            }
+        } else {
+            entry.unpack_in(dest)?;
+        }
     }
 
     anyhow::ensure!(

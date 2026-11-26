@@ -545,6 +545,23 @@ async fn spawn_lock_plugin(
     handler: &Option<HostHandler>,
     outcomes: &mut Vec<SpawnOutcome>,
 ) -> Option<Arc<dyn Plugin>> {
+    if let Some(pd) = pdir {
+        let dir = pd.join(name);
+        if entry.ecosystem == crate::claude_code::ECOSYSTEM
+            || (entry.argv.is_empty() && crate::claude_code::is_claude_plugin(&dir))
+        {
+            match crate::claude_code::ClaudeCodePlugin::load(name, &dir) {
+                Ok(p) => return Some(Arc::new(p) as Arc<dyn Plugin>),
+                Err(e) => {
+                    outcomes.push(SpawnOutcome {
+                        name: name.to_string(),
+                        error: Some(format!("{e:#}")),
+                    });
+                    return None;
+                }
+            }
+        }
+    }
     let argv: Vec<String> = if !entry.argv.is_empty() {
         entry.argv.clone()
     } else {

@@ -64,10 +64,9 @@ pub(crate) fn attachment_cells(attachments: &[std::path::PathBuf], text: &str) -
 /// row above the box, and a panel that cannot fit at least one row is hidden
 /// rather than drawn over the box.
 pub(crate) fn popup_rows(matches: usize, room: u16) -> usize {
-    if matches == 0 {
-        return 0;
-    }
-    PANEL_ROWS.min(usize::from(room.saturating_sub(1)))
+    matches
+        .min(PANEL_ROWS)
+        .min(usize::from(room.saturating_sub(1)))
 }
 
 pub(crate) fn viewport_cap(rows: u16) -> u16 {
@@ -307,7 +306,7 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         .saturating_sub(tui.terminal.viewport_area.y + status_h + box_h.saturating_sub(below_band));
     let home_drop = home_mode && !asking && home_room >= tui.matches.len().min(3) as u16;
     let panel_rows = if home_drop {
-        popup_rows(tui.matches.len(), home_room + 1).min(tui.matches.len())
+        popup_rows(tui.matches.len(), home_room.saturating_add(1))
     } else {
         popup_rows(
             tui.matches.len(),
@@ -508,10 +507,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
         let ask_h = rows_h[0];
         let widget_h = rows_h[2];
 
-        let visible_count = panel_rows;
-        let panel_gap: u16 = if visible_count > 0 && !home_drop {
-            visible_count as u16 + 1
-        } else if visible_count > 0 {
+        let panel_gap: u16 = if panel_rows > 0 && !home_drop {
+            panel_rows as u16 + 1
+        } else if panel_rows > 0 {
             0
         } else {
             search_h
@@ -800,27 +798,27 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
             }
         }
 
-        if visible_count > 0 {
+        if panel_rows > 0 {
             let start = tui
                 .sel
-                .saturating_sub(visible_count.saturating_sub(1))
+                .saturating_sub(panel_rows.saturating_sub(1))
                 .min(tui.sel);
 
             let total = tui.matches.len();
-            let end = (start + visible_count).min(total);
+            let end = (start + panel_rows).min(total);
             let hidden_above = start;
             let hidden_below = total.saturating_sub(end);
 
             let pad_x: u16 = 2;
             let mut item_w = 24usize;
-            for (name, desc) in tui.matches.iter().skip(start).take(visible_count) {
+            for (name, desc) in tui.matches.iter().skip(start).take(panel_rows) {
                 item_w = item_w.max(match_row_width(name, desc) + 1);
             }
             let pop_w = (item_w as u16 + pad_x * 2)
                 .min(area.width.saturating_sub(4))
                 .max(30);
             let inner_w = (pop_w - pad_x * 2) as usize;
-            let pop_h = visible_count as u16;
+            let pop_h = panel_rows as u16;
             let pop_x = (area.x + ibox.x as u16).min(area.right().saturating_sub(pop_w));
             let pop_y = if home_drop {
                 (box_y + (ibox.lead_h + ibox.band_h) as u16)
@@ -829,11 +827,6 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 box_y.saturating_sub(pop_h).max(area.y)
             };
             let rect = Rect::new(pop_x, pop_y, pop_w, pop_h);
-            let rows_y = if home_drop {
-                pop_y
-            } else {
-                pop_y + (visible_count - (end - start)) as u16
-            };
             if home_drop {
                 // Blank the home rows the dropdown covers, edge to edge, so
                 // no half-hidden model/hint text pokes out beside it.
@@ -863,14 +856,8 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
                 rect,
             );
 
-            for (i, (name, desc)) in tui
-                .matches
-                .iter()
-                .enumerate()
-                .skip(start)
-                .take(visible_count)
-            {
-                let item_y = rows_y + (i - start) as u16;
+            for (i, (name, desc)) in tui.matches.iter().enumerate().skip(start).take(panel_rows) {
+                let item_y = pop_y + (i - start) as u16;
                 let is_sel = i == tui.sel;
                 let cmd_str = format!(" /{name} ");
                 let desc_str = format!(" {} ", brief(desc));

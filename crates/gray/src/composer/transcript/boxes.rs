@@ -443,6 +443,23 @@ impl Tui {
                     let mut user_text = String::new();
                     let mut boundary = false;
                     let mut attached: Vec<std::path::PathBuf> = Vec::new();
+                    let mut recalled_markers = Vec::new();
+                    let mut unanchored_markers = Vec::new();
+                    let mut add_attachment = |text: &str, path: std::path::PathBuf| {
+                        use crate::repl::attachments::{attachment_marker, attachment_markers};
+                        let marker = attachment_marker(&path);
+                        if let Some((range, _)) = attachment_markers(text).pop()
+                            && range.end == text.len()
+                            && recalled_markers
+                                .last()
+                                .is_none_or(|(last, _)| *last != range)
+                        {
+                            recalled_markers.push((range, marker));
+                        } else {
+                            unanchored_markers.push(marker);
+                        }
+                        attached.push(path);
+                    };
                     let mut media_stubs: Vec<String> = Vec::new();
                     let has_tool_result = msg
                         .content
@@ -466,7 +483,7 @@ impl Tui {
                                         continue;
                                     }
                                     match media_stub_saved_path(text).filter(|p| p.is_file()) {
-                                        Some(saved) => attached.push(saved),
+                                        Some(saved) => add_attachment(&user_text, saved),
                                         None => media_stubs.push(text.trim().to_string()),
                                     }
                                     boundary =
@@ -499,7 +516,7 @@ impl Tui {
                                 if let Some(p) =
                                     gray_core::paths::materialize_media(media_type, data)
                                 {
-                                    attached.push(p);
+                                    add_attachment(&user_text, p);
                                 }
                             }
                             gray_core::ContentBlock::ToolResult {
@@ -548,8 +565,22 @@ impl Tui {
                         for stub in &media_stubs {
                             self.push_dim(format!("\u{2b22} {stub}"));
                         }
-                        if typed && !visible.is_empty() {
-                            self.history.push(visible);
+                        if !msg.injected && ((typed && !visible.is_empty()) || !attached.is_empty())
+                        {
+                            for (range, marker) in recalled_markers.into_iter().rev() {
+                                user_text.replace_range(range, &marker);
+                            }
+                            let (mut text, _) = super::split_synthetic_prompt(&user_text);
+                            for marker in unanchored_markers {
+                                if !text.is_empty() {
+                                    text.push('\n');
+                                }
+                                text.push_str(&marker);
+                            }
+                            self.history.push(crate::prompt_history::Entry {
+                                text,
+                                attachments: attached,
+                            });
                             if self.history.len() > 100 {
                                 self.history.remove(0);
                             }
@@ -561,7 +592,7 @@ impl Tui {
                     for block in &msg.content {
                         match block {
                             gray_core::ContentBlock::Thinking { text, .. } => {
-                                if !text.trim().is_empty() {
+                                if !self.hide_thinking && !text.trim().is_empty() {
                                     self.ensure_gap();
                                     let rows =
                                         thinking_run_rows(text, prose_width(self.width()), false);
