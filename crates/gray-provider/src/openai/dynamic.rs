@@ -49,6 +49,7 @@ pub(super) enum DynamicState {
         completed: bool,
         trail: EventTrail,
         reasoning_deltas: HashSet<String>,
+        relayed: bool,
     },
     Done,
 }
@@ -409,12 +410,11 @@ pub(super) fn process_dynamic_event(
             return Ok(true);
         }
         "response.failed" | "error" => {
-            let detail = value
-                .get("response")
-                .and_then(|r| r.get("error"))
-                .and_then(|e| e.get("message"))
-                .and_then(|v| v.as_str())
-                .or_else(|| value.get("message").and_then(|v| v.as_str()))
+            let detail = response_error(&value)
+                .get("message")
+                .and_then(Value::as_str)
+                .filter(|message| !message.is_empty())
+                .or_else(|| value.get("message").and_then(Value::as_str))
                 .unwrap_or("provider stream failed");
             return Err(stream_failure(&value, detail.to_string()));
         }
@@ -423,18 +423,20 @@ pub(super) fn process_dynamic_event(
     Ok(false)
 }
 
-pub(super) fn stream_failure(event: &Value, detail: String) -> ProviderError {
-    let code = event
-        .get("response")
-        .and_then(|r| r.get("error"))
-        .or_else(|| event.get("error"))
+fn response_error(event: &Value) -> &Value {
+    event
+        .pointer("/response/error")
+        .filter(|error| !error.is_null())
+        .or_else(|| event.get("error").filter(|error| !error.is_null()))
         .unwrap_or(event)
-        .get("code")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_lowercase();
-    if quota_hinted(&[code.as_str(), detail.as_str()]) {
-        let resets_in = parse_quota_reset_delay(&detail);
+}
+
+pub(super) fn stream_failure(event: &Value, detail: String) -> ProviderError {
+    let error = response_error(event);
+    let code = error_code(error);
+    let kind = error.get("type").and_then(Value::as_str).unwrap_or("");
+    if quota_hinted(&[code.as_deref().unwrap_or(""), kind, &detail]) {
+        let resets_in = structured_quota_reset(error).or_else(|| parse_quota_reset_delay(&detail));
         return ProviderError::Detailed {
             class: Box::new(ProviderError::Quota {
                 message: detail.clone(),
@@ -442,10 +444,7 @@ pub(super) fn stream_failure(event: &Value, detail: String) -> ProviderError {
             }),
             detail: Box::new(gray_core::error::ProviderDetail {
                 status: None,
-                vendor_code: Some(quota_vendor_code(
-                    (!code.is_empty()).then_some(code),
-                    resets_in,
-                )),
+                vendor_code: Some(quota_vendor_code(code, resets_in)),
                 vendor_message: Some(detail),
                 cf_ray: None,
                 request_id: None,
@@ -454,6 +453,28 @@ pub(super) fn stream_failure(event: &Value, detail: String) -> ProviderError {
         };
     }
     ProviderError::Stream(detail)
+}
+
+fn relay_quota_error(event: &Value) -> Option<ProviderError> {
+    if event["type"] != "response.output_text.delta" {
+        return None;
+    }
+    let text = event["delta"].as_str()?.trim_end();
+    let (_, wait) = text.rsplit_once(
+        "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in ",
+    )?;
+    let duration = wait.strip_suffix('.')?;
+    if !duration
+        .bytes()
+        .all(|b| b.is_ascii_digit() || matches!(b, b'd' | b'h' | b'm' | b's'))
+    {
+        return None;
+    }
+    let resets_in = parse_reset_duration(duration)?;
+    Some(ProviderError::Quota {
+        message: format!("Individual quota reached. Resets in {duration}."),
+        resets_in: Some(resets_in),
+    })
 }
 
 pub(super) async fn dynamic_step(
@@ -496,6 +517,7 @@ pub(super) async fn dynamic_step(
                             completed: false,
                             trail: EventTrail::default(),
                             reasoning_deltas: HashSet::new(),
+                            relayed: lease.metadata.contains_key("relay_url"),
                         };
                     }
                     Err(error) => return Some((Err(error), DynamicState::Done)),
@@ -510,6 +532,7 @@ pub(super) async fn dynamic_step(
                 mut completed,
                 mut trail,
                 mut reasoning_deltas,
+                relayed,
             } => {
                 if completed && pending.is_empty() {
                     return None;
@@ -546,6 +569,7 @@ pub(super) async fn dynamic_step(
                                 completed,
                                 trail,
                                 reasoning_deltas,
+                                relayed,
                             };
                             continue;
                         }
@@ -573,6 +597,9 @@ pub(super) async fn dynamic_step(
                                 ));
                             }
                         };
+                        if relayed && let Some(error) = relay_quota_error(&value) {
+                            return Some((Err(error), DynamicState::Done));
+                        }
                         trail.push(value.get("type").and_then(|v| v.as_str()).unwrap_or(""));
                         match process_dynamic_event(
                             value,
@@ -596,6 +623,7 @@ pub(super) async fn dynamic_step(
                                 completed,
                                 trail,
                                 reasoning_deltas,
+                                relayed,
                             };
                             return Some((Ok(event), state));
                         }
@@ -611,6 +639,7 @@ pub(super) async fn dynamic_step(
                             completed,
                             trail,
                             reasoning_deltas,
+                            relayed,
                         };
                     }
                 }

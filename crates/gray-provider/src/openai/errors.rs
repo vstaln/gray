@@ -10,8 +10,13 @@ pub(super) fn error_body_message(body: &str) -> Option<String> {
     (!msg.is_empty()).then(|| msg.to_string())
 }
 
-pub(super) const QUOTA_EXHAUSTED_HINTS: [&str; 14] = [
+pub(super) const QUOTA_EXHAUSTED_HINTS: &[&str] = &[
+    QUOTA_VENDOR_CODE,
     "insufficient_quota",
+    "usage_limit_reached",
+    "individual quota reached",
+    "usage limit exceeded",
+    "you've hit your usage limit",
     "subscription_sharing_usage_limit_exceeded",
     "insufficient quota",
     "insufficient credits",
@@ -19,6 +24,8 @@ pub(super) const QUOTA_EXHAUSTED_HINTS: [&str; 14] = [
     "exceeded your current quota",
     "exceeds your allocated quota",
     "quota exceeded",
+    "quota exhausted",
+    "quota has been exhausted",
     "quota_exceeded",
     "gousagelimiterror",
     "available balance",
@@ -65,14 +72,29 @@ pub fn is_quota_exhausted(err: &ProviderError) -> bool {
 
 pub(super) fn error_body_code(body: &str) -> Option<String> {
     let v: Value = serde_json::from_str(body.trim()).ok()?;
-    v.pointer("/error/code")
-        .or_else(|| v.pointer("/error/type"))
-        .and_then(|v| {
-            v.as_str()
-                .map(str::to_string)
-                .or_else(|| v.as_u64().map(|n| n.to_string()))
+    error_code(v.get("error").unwrap_or(&v))
+}
+
+pub(super) fn error_code(error: &Value) -> Option<String> {
+    ["code", "type"].into_iter().find_map(|key| {
+        let v = error.get(key)?;
+        v.as_str()
+            .map(str::to_string)
+            .or_else(|| v.as_u64().map(|n| n.to_string()))
+            .filter(|s| !s.is_empty())
+    })
+}
+
+pub(super) fn structured_quota_reset(error: &Value) -> Option<Duration> {
+    error["resets_at"]
+        .as_i64()
+        .filter(|&epoch| epoch > 0)
+        .map(delay_until)
+        .filter(|delay| delay.as_secs() <= u64::from(u32::MAX))
+        .or_else(|| {
+            let secs = u32::try_from(error["resets_in_seconds"].as_u64()?).ok()?;
+            Some(Duration::from_secs(secs.into()))
         })
-        .filter(|s| !s.is_empty())
 }
 
 pub(crate) fn classify_http_error(
@@ -91,9 +113,10 @@ pub(crate) fn classify_http_error(
             ProviderError::Auth(_) | ProviderError::BadRequest(_)
         ) && quota_hinted(&[snippet]))
     {
-        resets_in = vendor_message
-            .as_deref()
-            .and_then(parse_quota_reset_delay)
+        resets_in = serde_json::from_str::<Value>(snippet)
+            .ok()
+            .and_then(|body| structured_quota_reset(body.get("error").unwrap_or(&body)))
+            .or_else(|| vendor_message.as_deref().and_then(parse_quota_reset_delay))
             .or_else(|| parse_quota_reset_delay(snippet));
         vendor_code = Some(quota_vendor_code(vendor_code, resets_in));
         if let ProviderError::Quota {
@@ -172,18 +195,16 @@ pub(super) fn classify_http_error_inner(
     if is_unsupported {
         return ProviderError::BadRequest(msg);
     }
-    let quota_exhausted = quota_hinted(&[snippet]);
+    if status.as_u16() == 402
+        || (matches!(status.as_u16(), 400 | 403 | 429 | 500..=599) && quota_hinted(&[snippet]))
+    {
+        return ProviderError::Quota {
+            message: msg,
+            resets_in: None,
+        };
+    }
     match status.as_u16() {
         401 | 403 => ProviderError::Auth(msg),
-
-        402 => ProviderError::Quota {
-            message: msg,
-            resets_in: None,
-        },
-        429 if quota_exhausted => ProviderError::Quota {
-            message: msg,
-            resets_in: None,
-        },
         429 => ProviderError::RateLimited(msg),
 
         413 => ProviderError::ContextOverflow(format!(
@@ -249,7 +270,7 @@ pub(super) fn parse_http_date_delay(raw: &str) -> Option<Duration> {
 }
 
 pub(super) fn delay_until(epoch: i64) -> Duration {
-    Duration::from_secs((epoch - chrono::Utc::now().timestamp()).max(0) as u64)
+    Duration::from_secs(epoch.saturating_sub(chrono::Utc::now().timestamp()).max(0) as u64)
 }
 
 pub(super) fn parse_quota_reset_delay(text: &str) -> Option<Duration> {
@@ -283,7 +304,17 @@ pub(super) fn parse_quota_reset_delay(text: &str) -> Option<Duration> {
     None
 }
 
-pub(super) fn parse_reset_duration(s: &str) -> Option<Duration> {
+pub(super) fn parse_reset_duration(mut text: &str) -> Option<Duration> {
+    let (mut total, tail) = parse_duration_part(text)?;
+    text = tail.trim_start();
+    while let Some((part, tail)) = parse_duration_part(text) {
+        total = total.checked_add(part)?;
+        text = tail.trim_start();
+    }
+    Some(total)
+}
+
+fn parse_duration_part(s: &str) -> Option<(Duration, &str)> {
     let nlen = s
         .bytes()
         .take_while(|b| b.is_ascii_digit() || *b == b'.')
@@ -302,7 +333,10 @@ pub(super) fn parse_reset_duration(s: &str) -> Option<Duration> {
         "w" | "week" | "weeks" => 604800,
         _ => return None,
     };
-    Some(Duration::from_secs_f64(num * secs as f64))
+    Some((
+        Duration::try_from_secs_f64(num * secs as f64).ok()?,
+        &unit[ulen..],
+    ))
 }
 
 pub(super) fn parse_reset_timestamp(s: &str) -> Option<Duration> {

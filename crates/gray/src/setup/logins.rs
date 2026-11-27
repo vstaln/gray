@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::io::{Read, Seek};
 use std::process::Stdio;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
@@ -55,19 +56,21 @@ fn first_err_line(stderr: &[u8], fallback: &str) -> String {
 
 pub(crate) fn run(argv: &[String], args: &[&str], timeout: Duration) -> Result<String, String> {
     let (prog, base) = argv.split_first().ok_or("empty argv")?;
+    let mut stdout = tempfile::tempfile().map_err(|e| format!("stdout: {e}"))?;
+    let mut stderr = tempfile::tempfile().map_err(|e| format!("stderr: {e}"))?;
     let mut child = std::process::Command::new(prog)
         .args(base)
         .args(args)
         .env("GRAY_BIN", gray_bin())
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(stdout.try_clone().map_err(|e| format!("stdout: {e}"))?)
+        .stderr(stderr.try_clone().map_err(|e| format!("stderr: {e}"))?)
         .spawn()
         .map_err(|e| format!("spawn: {e}"))?;
     let deadline = Instant::now() + timeout;
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(15)),
             Ok(None) => {
                 let _ = child.kill();
@@ -76,12 +79,21 @@ pub(crate) fn run(argv: &[String], args: &[&str], timeout: Duration) -> Result<S
             }
             Err(e) => return Err(format!("wait: {e}")),
         }
+    };
+    let output = if status.success() {
+        &mut stdout
+    } else {
+        &mut stderr
+    };
+    let mut bytes = Vec::new();
+    output
+        .rewind()
+        .and_then(|()| output.read_to_end(&mut bytes))
+        .map_err(|e| format!("read output: {e}"))?;
+    if !status.success() {
+        return Err(first_err_line(&bytes, "command failed"));
     }
-    let out = child.wait_with_output().map_err(|e| format!("wait: {e}"))?;
-    if !out.status.success() {
-        return Err(first_err_line(&out.stderr, "command failed"));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(String::from_utf8_lossy(&bytes).trim().to_string())
 }
 
 fn run_json(argv: &[String], args: &[&str], timeout: Duration) -> Result<Value, String> {
@@ -628,9 +640,8 @@ impl Logins {
         );
         std::thread::spawn(move || {
             let list = run_json(&argv, &["account", "list", "--json"], LIST_TIMEOUT);
-            let listed = list.as_ref().map(|_| ()).map_err(Clone::clone);
             let _ = tx.send((plugin.clone(), generation, Msg::List(list)));
-            let usage = listed.and_then(|()| fetch_usage(&argv, true, None));
+            let usage = fetch_usage(&argv, true, None);
             let _ = tx.send((plugin, generation, Msg::Usage(usage)));
         });
     }
@@ -780,12 +791,19 @@ impl Logins {
     }
 
     pub(crate) fn rail_tag(&self, installed: &InstalledProvider) -> Option<Tag> {
-        let doc = self.provider_doc(installed)?;
+        let Some(doc) = self.provider_doc(installed) else {
+            return cached_tag(&installed.provider_id(), None, true, false);
+        };
         let label = Self::serving(doc);
         if label.is_none() && doc["ambient"] != true {
             return None;
         }
-        if !self.refreshing(&installed.plugin)
+        let pinned = doc["selected"].as_str().is_some_and(|s| !s.is_empty())
+            || doc["accounts"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|acct| acct["pinned"] == true));
+        if !pinned
+            && !self.refreshing(&installed.plugin)
             && let Some(pct) = self.pool_pct(&installed.plugin)
         {
             return Some(Tag::Pct(pct));
@@ -815,7 +833,10 @@ impl Logins {
 
     fn cached_windows(&self, plugin: &str, label: Option<&str>) -> Vec<crate::usage_cache::Window> {
         let provider = self.provider_of(plugin);
-        crate::usage_cache::for_row(&provider, label, false)
+        let serving = self
+            .doc(plugin)
+            .is_some_and(|doc| Self::serving(doc).as_deref() == label);
+        crate::usage_cache::for_row(&provider, label, serving)
     }
 
     fn strategy(&self, source: &Source) -> String {
