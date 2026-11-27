@@ -558,6 +558,11 @@ pub(crate) async fn run_prompt_turn(
                     t.ensure_gap();
 
                     t.push_error(&msg);
+                    if matches!(e.class(), CoreError::Quota { .. }) {
+                        t.push_dim(
+                            "Switch models with /models, then press Enter to continue.".into(),
+                        );
+                    }
                     if reloaded {
                         super::notice::push_notice(&mut t, "API key reloaded", RELOADED, false);
                     }

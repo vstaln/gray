@@ -383,7 +383,19 @@ fn reset_clock_wait(text: &str) -> Option<std::time::Duration> {
     ))
 }
 
-fn terminal_error(e: ProviderError) -> CoreError {
+fn terminal_error(e: ProviderError, retries: u8) -> CoreError {
+    if matches!(
+        e.class(),
+        ProviderError::Quota {
+            resets_in: Some(_),
+            ..
+        }
+    ) {
+        return CoreError::from(e);
+    }
+    if retries >= MAX_TURN_RETRIES {
+        return retry_give_up(&e.to_string(), retries, None);
+    }
     match reset_clock_wait(&e.to_string()) {
         Some(resets_in) => CoreError::Quota {
             message: e.to_string(),
@@ -394,6 +406,13 @@ fn terminal_error(e: ProviderError) -> CoreError {
 }
 
 fn provider_reset_hint(e: &ProviderError) -> Option<std::time::Duration> {
+    if let ProviderError::Quota {
+        resets_in: Some(wait),
+        ..
+    } = e.class()
+    {
+        return Some(*wait);
+    }
     if let Some(d) = e.detail() {
         if let Some(hint) = d.retry_after() {
             return Some(hint);
@@ -1102,11 +1121,7 @@ impl Agent {
                                 self.contaminated.insert(self.messages.len() - 1);
                             }
                             self.emit_turn_end(&billed).await;
-                            return Err(if turn_retries >= MAX_TURN_RETRIES {
-                                retry_give_up(&e.to_string(), turn_retries, None)
-                            } else {
-                                terminal_error(e)
-                            });
+                            return Err(terminal_error(e, turn_retries));
                         }
                         Some(Ok(StreamEvent::TextDelta { delta })) => {
                             if !delta.is_empty() {
@@ -1341,21 +1356,13 @@ impl Agent {
                                         continue 'turn;
                                     }
                                     _ => {
-                                        let err = if turn_retries >= MAX_TURN_RETRIES {
-                                            retry_give_up(&e.to_string(), turn_retries, None)
-                                        } else {
-                                            terminal_error(e)
-                                        };
+                                        let err = terminal_error(e, turn_retries);
                                         self.emit_turn_end(&billed).await;
                                         return Err(err);
                                     }
                                 }
                             }
-                            let err = if turn_retries >= MAX_TURN_RETRIES {
-                                retry_give_up(&e.to_string(), turn_retries, None)
-                            } else {
-                                terminal_error(e)
-                            };
+                            let err = terminal_error(e, turn_retries);
                             self.emit_turn_end(&billed).await;
                             return Err(err);
                         }

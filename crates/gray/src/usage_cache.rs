@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -48,6 +49,19 @@ pub(crate) fn now() -> i64 {
 
 fn path() -> Option<PathBuf> {
     gray_core::paths::gray_home().map(|home| home.join("usage-cache.json"))
+}
+
+fn lock_writes() -> Option<File> {
+    let path = path()?.with_extension("lock");
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let lock = File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .ok()?;
+    lock.lock().ok()?;
+    Some(lock)
 }
 
 pub(crate) fn load() -> Vec<Window> {
@@ -122,6 +136,9 @@ fn upsert(windows: &mut Vec<Window>, next: Window) {
 }
 
 pub(crate) fn record_usage(provider: &str, accounts: &Value) {
+    let Some(_lock) = lock_writes() else {
+        return;
+    };
     let provider = provider_key(provider).to_string();
     let now = now();
     let mut windows = load();
@@ -156,6 +173,9 @@ pub(crate) fn record_usage(provider: &str, accounts: &Value) {
 }
 
 pub(crate) fn record_health(provider: &str, accounts: &Value) {
+    let Some(_lock) = lock_writes() else {
+        return;
+    };
     let provider = provider_key(provider).to_string();
     let now = now();
     let mut windows = load();
@@ -191,6 +211,9 @@ pub(crate) fn record_health(provider: &str, accounts: &Value) {
 }
 
 pub(crate) fn note_quota(provider: &str, message: &str, resets_in: Option<std::time::Duration>) {
+    let Some(_lock) = lock_writes() else {
+        return;
+    };
     let now = now();
     let window = window_of(message);
     let resets_at = resets_in.map(|wait| now + wait.as_secs() as i64);
