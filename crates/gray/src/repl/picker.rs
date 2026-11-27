@@ -208,7 +208,11 @@ pub(crate) fn draw_list_picker<T>(
             .zip(&pick_keys.keys)
             .map(|(k, (_, label))| (k.as_str(), *label, true)),
     );
-    hints.push(("esc", "close", true));
+    hints.push((
+        "esc",
+        if query.is_empty() { "close" } else { "clear" },
+        true,
+    ));
     let hints_w: usize = hints
         .iter()
         .map(|(k, l, _)| k.chars().count() + l.chars().count() + 4)
@@ -407,8 +411,8 @@ pub(crate) fn run_list_picker_keys<T>(
     use std::time::Duration;
 
     let (_session, mut terminal) = crate::setup::open_modal()?;
-    let mut sel = picker.selected;
-    let mut query = String::new();
+    let mut query = crate::setup::take_typeahead();
+    let mut sel = if query.is_empty() { picker.selected } else { 0 };
 
     loop {
         let q = query.to_lowercase();
@@ -515,6 +519,11 @@ pub(crate) fn run_list_picker_keys<T>(
                     }
                     _ => {}
                 }
+            }
+            Event::Paste(text) => {
+                query.extend(text.chars().filter(|c| !c.is_control()));
+                sel = 0;
+                highlight_match(picker, &query);
             }
             _ => {}
         }

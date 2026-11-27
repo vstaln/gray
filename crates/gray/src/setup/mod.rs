@@ -32,20 +32,39 @@ pub(crate) fn open_modal() -> std::io::Result<(TuiSession, ModalTerminal)> {
     Ok((session, terminal))
 }
 
+static TYPEAHEAD: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+pub(crate) fn take_typeahead() -> String {
+    std::mem::take(&mut *TYPEAHEAD.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 fn drain_queued_events() {
-    use crossterm::event::{poll, read};
+    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, poll, read};
     use std::time::Duration;
 
+    let mut typed = String::new();
     for _ in 0..256 {
         match poll(Duration::ZERO) {
-            Ok(true) => {
-                if read().is_err() {
-                    break;
+            Ok(true) => match read() {
+                Ok(Event::Key(k))
+                    if k.kind == KeyEventKind::Press
+                        && (k.modifiers - KeyModifiers::SHIFT).is_empty() =>
+                {
+                    match k.code {
+                        KeyCode::Char(c) if !(typed.is_empty() && c == ' ') => typed.push(c),
+                        KeyCode::Backspace => {
+                            typed.pop();
+                        }
+                        _ => typed.clear(),
+                    }
                 }
-            }
+                Ok(_) => {}
+                Err(_) => break,
+            },
             _ => break,
         }
     }
+    *TYPEAHEAD.lock().unwrap_or_else(|e| e.into_inner()) = typed;
 }
 
 impl Drop for TuiSession {
