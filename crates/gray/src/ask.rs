@@ -895,7 +895,7 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
         "enter submit \u{b7} esc back".to_string()
     } else if multi {
         format!(
-            "{arrows} move \u{b7} space or {keys} toggle{back} \u{b7} enter confirm \u{b7} esc cancel"
+            "{arrows} move \u{b7} space or {keys} toggle{back} \u{b7} enter pick, enter on a picked row confirms \u{b7} esc cancel"
         )
     } else {
         let edit = if state.questions[qi].editable {
@@ -1083,6 +1083,8 @@ fn run_ask_modal(
                 let c = state.cursor[i];
                 if state.is_freeform(i, c) {
                     state.editing[i] = true;
+                } else if multi && !state.checked[i][c] {
+                    state.checked[i][c] = true;
                 } else {
                     submit = state.advance();
                 }
