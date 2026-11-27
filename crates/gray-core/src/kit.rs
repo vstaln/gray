@@ -463,6 +463,28 @@ pub fn parse_cli_args(
         }
     }
     let props = def.parameters.get("properties").and_then(Value::as_object);
+    let open = def
+        .parameters
+        .get("additionalProperties")
+        .is_some_and(|v| v != &Value::Bool(false))
+        || props.is_none_or(Map::is_empty);
+    let known = |key: &str| -> Result<(), String> {
+        match props {
+            Some(p) if !open && !p.contains_key(key) => {
+                let flags: Vec<String> = p
+                    .keys()
+                    .map(|k| format!("--{}", k.replace('_', "-")))
+                    .collect();
+                Err(format!(
+                    "unknown flag --{}; {} takes: {}",
+                    key.replace('_', "-"),
+                    def.name,
+                    flags.join(" ")
+                ))
+            }
+            _ => Ok(()),
+        }
+    };
     let mut i = 0;
     let mut positionals: Vec<String> = Vec::new();
     while i < args.len() {
@@ -496,6 +518,7 @@ pub fn parse_cli_args(
         }
         if let Some(rest) = arg.strip_prefix("--no-") {
             let key = match_prop_key(props, rest);
+            known(&key)?;
             obj.insert(key, Value::Bool(false));
             i += 1;
             continue;
@@ -503,11 +526,13 @@ pub fn parse_cli_args(
         if let Some(rest) = arg.strip_prefix("--") {
             if let Some((raw_k, raw_v)) = rest.split_once('=') {
                 let key = match_prop_key(props, raw_k);
+                known(&key)?;
                 let schema = props.and_then(|p| p.get(&key));
                 insert_flag(&mut obj, key, raw_v, schema);
                 i += 1;
             } else {
                 let key = match_prop_key(props, rest);
+                known(&key)?;
                 let schema = props.and_then(|p| p.get(&key));
                 let is_bool = schema.map(type_of) == Some("boolean");
                 match args.get(i + 1) {
