@@ -888,6 +888,12 @@ fn bash_header(
                 if !rest.is_empty() {
                     spans.push(Span::styled(format!(" {rest}"), cmd_style));
                 }
+            } else if is_kit_command(core.command) {
+                let (head, rest) = cmd.split_once(char::is_whitespace).unwrap_or((&cmd, ""));
+                spans.push(Span::styled(head.to_string(), action_style));
+                if !rest.is_empty() {
+                    spans.push(Span::styled(format!(" {rest}"), cmd_style));
+                }
             } else {
                 spans.push(verb(if background { "Started " } else { "Ran " }));
                 spans.push(Span::styled(cmd, cmd_style));
@@ -901,6 +907,13 @@ fn bash_header(
             Line::from(spans)
         }
     }
+}
+
+fn is_kit_command(command: &str) -> bool {
+    command
+        .split_whitespace()
+        .next()
+        .is_some_and(|head| head.rsplit('/').next() == Some("kit"))
 }
 
 fn gray_cli_command(command: &str) -> Option<&str> {
@@ -938,7 +951,7 @@ pub(crate) fn verbless_card(name: &str, args: &serde_json::Value) -> bool {
     if !background && gray_tools::shell::label::read_only(full).is_some() {
         return false;
     }
-    gray_cli_command(core.command).is_some()
+    gray_cli_command(core.command).is_some() || is_kit_command(core.command)
 }
 
 fn read_header(
