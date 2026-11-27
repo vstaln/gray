@@ -19,9 +19,11 @@ pub struct PendingCall {
 }
 
 impl PendingCall {
-    pub fn resolve(self, output: String) {
+    pub fn resolve(self, output: String, images: Vec<Value>) {
+        let mut content = vec![json!({"type": "text", "text": output})];
+        content.extend(images);
         let _ = self.reply.send(json!({
-            "content": [{"type": "text", "text": output}],
+            "content": content,
             "isError": false,
         }));
     }

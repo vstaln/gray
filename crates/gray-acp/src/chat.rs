@@ -182,6 +182,22 @@ pub fn prepare_turn(body: &Value, model: &str) -> Result<PreparedTurn, String> {
     })
 }
 
+pub(crate) fn image_only_message(item: &Value) -> bool {
+    item_type(item) == "message"
+        && item
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                !parts.is_empty()
+                    && parts.iter().all(|p| {
+                        matches!(
+                            p.get("type").and_then(Value::as_str),
+                            Some("input_image" | "image_url")
+                        )
+                    })
+            })
+}
+
 pub fn assistant_side(item: &Value) -> bool {
     match item_type(item) {
         "function_call" | "reasoning" => true,
@@ -247,7 +263,7 @@ pub fn split_tail(turn: &mut PreparedTurn) {
     split_tail_with(turn, false);
 }
 
-fn image_blocks(item: &Value) -> Vec<Value> {
+pub(crate) fn image_blocks(item: &Value) -> Vec<Value> {
     let Some(parts) = item.get("content").and_then(Value::as_array) else {
         return Vec::new();
     };
