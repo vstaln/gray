@@ -286,10 +286,13 @@ fn not_a_secret_value(value: &str) -> bool {
 }
 
 fn is_placeholder(name: &str, value: &str) -> bool {
-    let close = match name.trim_start_matches(['(', '[', '"', '\'', '`']) {
-        "{{secret" => "}}",
-        "<secret" => ">",
-        _ => return false,
+    let name = name.trim_start_matches(['(', '[', '"', '\'', '`']);
+    let close = if name.starts_with("{{") {
+        "}}"
+    } else if name.starts_with('<') {
+        ">"
+    } else {
+        return false;
     };
     value.split_once(close).is_some_and(|(id, _)| {
         (1..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
