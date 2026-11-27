@@ -216,6 +216,9 @@ pub async fn handle_ask(params: serde_json::Value) -> serde_json::Value {
     if questions.is_empty() {
         return serde_json::json!({ "answers": {} });
     }
+    if questions.iter().any(|q| q.secret) && !matches!(svc.driver, AskDriver::Tui(_)) {
+        return serde_json::json!({"error": "no interactive prompt available"});
+    }
     if !blocking {
         return serde_json::json!({ "answers": {} });
     }
@@ -1197,71 +1200,4 @@ fn push_ask_summary(
         })
         .collect();
     t.push_tool_box(asked_header(rows.len()), asked_lines(&rows, "skipped"));
-}
-
-const SAVE_PERMANENTLY: &str = "Save permanently";
-
-pub async fn handle_secret(params: serde_json::Value) -> serde_json::Value {
-    let tui_driven = SERVICE
-        .lock()
-        .expect("ask service")
-        .as_ref()
-        .is_some_and(|svc| matches!(svc.driver, AskDriver::Tui(_)));
-    if !tui_driven {
-        return serde_json::json!({"error": "no interactive prompt available"});
-    }
-    let text = |key: &str| {
-        params
-            .get(key)
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    };
-    let mut title = text("title");
-    if title.is_empty() {
-        title = "Secret".to_string();
-    }
-    let purpose = text("purpose");
-    let question = if purpose.is_empty() {
-        title.clone()
-    } else {
-        format!("{title}\n{purpose}")
-    };
-    let mut options = Vec::new();
-    if params.get("allow_persist").and_then(|v| v.as_bool()) == Some(true) {
-        options.push(serde_json::json!({"label": SAVE_PERMANENTLY, "description": "type or paste, kept in the system keyring", "freeform": true}));
-    }
-    options.push(serde_json::json!({"label": "This session only", "description": "type or paste, forgotten when gray exits", "freeform": true}));
-    let reply = handle_ask(serde_json::json!({
-        "blocking": true,
-        "questions": [{
-            "id": "secret",
-            "header": "Secret",
-            "question": question,
-            "options": options,
-            "no_other": true,
-            "secret": true,
-        }],
-    }))
-    .await;
-    let picked: Vec<String> = reply
-        .pointer("/answers/secret/answers")
-        .and_then(|a| a.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let value = picked
-        .iter()
-        .find_map(|a| a.strip_prefix("user_note: "))
-        .map(str::to_string)
-        .unwrap_or_default();
-    if value.is_empty() {
-        return serde_json::json!({"declined": true});
-    }
-    let persist = picked.iter().any(|a| a == SAVE_PERMANENTLY);
-    serde_json::json!({"value": value, "persist": persist})
 }

@@ -43,8 +43,6 @@ pub const HOST_SAY: &str = "host/say";
 
 pub const HOST_ASK: &str = "host/ask";
 
-pub const HOST_SECRET: &str = "host/secret";
-
 pub const HOST_TTL: Duration = Duration::from_secs(30);
 
 pub const HOST_TOOLS_CHANGED: &str = "host/tools_changed";
@@ -444,7 +442,7 @@ fn spawn_reader(
                 };
 
                 let handler_ttl = match method_owned.as_str() {
-                    HOST_ASK | HOST_SECRET | HOST_PLUGIN_INSTALL => ASK_HANDLER_TTL,
+                    HOST_ASK | HOST_PLUGIN_INSTALL => ASK_HANDLER_TTL,
                     HOST_COMPLETE => HOST_COMPLETE_TTL,
                     _ => HOST_TTL,
                 };

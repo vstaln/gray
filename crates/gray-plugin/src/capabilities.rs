@@ -8,8 +8,6 @@ pub const HOST_TURN: &str = "host.turn";
 
 pub const HOST_ASK: &str = "host.ask";
 
-pub const HOST_SECRET: &str = "host.secret";
-
 pub const HOST_SAY: &str = "host.say";
 
 pub const HOST_LINKS: &str = "host.links";
@@ -52,11 +50,6 @@ const SPECS: &[CapabilitySpec] = &[
         id: HOST_ASK,
         host_methods: &["host/ask"],
         description: "ask you a blocking question in the middle of a tool call",
-    },
-    CapabilitySpec {
-        id: HOST_SECRET,
-        host_methods: &["host/secret"],
-        description: "ask you to type a secret into a masked prompt; only this plugin receives the value",
     },
     CapabilitySpec {
         id: HOST_SAY,
