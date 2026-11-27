@@ -54,7 +54,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "continue",
-        desc: "continue here, or in a fresh chat if the cache is cold",
+        desc: "carry this chat, or a named one, into a fresh chat",
         aliases: &[],
         scope: CmdScope::Conversation,
         surface: CmdSurface::Text,

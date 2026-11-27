@@ -109,7 +109,7 @@
 ## [0.2.24] - 2026-11-15
 
 ### Added
-- **`/continue`.** Picks a chat back up in place, or hands it off to a fresh chat when the cache is cold and the context is large. `/continue <session> <message>` continues a named session; a first word only counts as a session on an exact id match.
+- **`/continue`.** Carries the current chat into a fresh chat, with its last request, where it left off and a `kit recall` pointer to the earlier turns. In an empty chat it picks up the latest chat from this folder. `/continue <session> <message>` continues a named session; a first word only counts as a session on an exact id match.
 - **Plugins reload after an update without restarting gray.** When a plugin's binary is replaced on disk, the next request shuts the old process down, starts the new one and re-reads its commands and tools.
 - **`/models` says when usage numbers are cached, and how old they are.**
 

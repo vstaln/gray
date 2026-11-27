@@ -3,7 +3,6 @@ use crate::session_store::real_user_text;
 use gray_core::message::Role;
 
 const REQUEST_CHARS: usize = 400;
-const COLD_HINT_TOKENS: usize = 40_000;
 const REPLY_CHARS: usize = 1_200;
 const TITLE_CHARS: usize = 60;
 
@@ -33,32 +32,15 @@ pub(crate) async fn start(
 
     let has_messages = agent.as_ref().is_some_and(|a| !a.messages().is_empty());
     if has_messages {
-        let cold = tui.is_some_and(|s| {
-            let mut t = s.lock().expect("tui lock");
-            t.cache_is_cold() && t.context_tokens() >= COLD_HINT_TOKENS
-        });
-        if cold {
-            super::session::ensure_session_state(session_state, config, cwd).await;
-            let current = session_state.as_ref().map(|s| s.session_id.clone());
-            let text = match current {
-                Some(id) => build(&store, &id).await,
-                None => None,
-            };
-            if let Some(text) = text {
-                *pending_command = Some(ReplCommand::New(Some(with_extra(text, extra))));
-                return;
-            }
-            let text = extra.unwrap_or_else(|| CONTINUE_PROMPT.to_string());
-            if !confirm_in_place(tui, &text) {
-                return;
-            }
-            echo_prompt(tui, &text);
-            *pending_command = Some(ReplCommand::Prompt(text));
-            return;
+        super::session::ensure_session_state(session_state, config, cwd).await;
+        let text = match session_state.as_ref().map(|s| s.session_id.clone()) {
+            Some(id) => build(&store, &id).await,
+            None => None,
+        };
+        match text {
+            Some(text) => *pending_command = Some(ReplCommand::New(Some(with_extra(text, extra)))),
+            None => say(tui, "nothing to continue"),
         }
-        let text = extra.unwrap_or_else(|| CONTINUE_PROMPT.to_string());
-        echo_prompt(tui, &text);
-        *pending_command = Some(ReplCommand::Prompt(text));
         return;
     }
 
@@ -148,7 +130,7 @@ pub(crate) async fn build(store: &JsonlSessionStore, id: &SessionId) -> Option<S
         out.push_str("\n\nWhere it left off (end of the last reply):\n");
         out.push_str(&quoted(&tail, cut, false));
         out.push_str(&format!(
-            "\n\nEarlier turns: recall id=\"{}:{entry_id}\" (around=N for more).",
+            "\n\nEarlier turns: `kit recall --id {}:{entry_id} --around 5` (raise --around for more).",
             id.as_str()
         ));
         quoted_something = true;
@@ -205,40 +187,9 @@ fn quoted(body: &str, leading_ellipsis: bool, trailing_ellipsis: bool) -> String
         .join("\n")
 }
 
-fn confirm_in_place(tui: Option<&crate::composer::SharedTui>, text: &str) -> bool {
-    let Some(shared) = tui else {
-        return true;
-    };
-    let mut t = shared.lock().expect("tui lock");
-    if t.cold_confirm_armed.as_deref() == Some(text) {
-        t.cold_confirm_armed = None;
-        let _ = t.draw();
-        return true;
-    }
-    t.cold_confirm_armed = Some(text.to_string());
-    t.push_dim(
-        "cache is cold and this chat has no earlier turns to summarise · /continue again to send it here"
-            .to_string(),
-    );
-    let _ = t.draw();
-    false
-}
-
 fn with_extra(text: String, extra: Option<String>) -> String {
     match extra {
         Some(extra) => format!("{text}\n\n{extra}"),
         None => text,
-    }
-}
-
-fn echo_prompt(tui: Option<&crate::composer::SharedTui>, text: &str) {
-    match tui {
-        Some(shared) => {
-            shared
-                .lock()
-                .expect("tui lock")
-                .push_user_prompt(text, &[], !text.starts_with('/'))
-        }
-        None => say(None, &format!("{} {text}", crate::tui::arrow_glyph())),
     }
 }

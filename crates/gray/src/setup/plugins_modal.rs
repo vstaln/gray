@@ -364,7 +364,6 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
 
     let mut rows = load_rows();
     let mut sel = 0usize;
-    let mut query = String::new();
     let mut detail = false;
     let mut changed = false;
     let mut op_msg: Option<String> = None;
@@ -374,7 +373,7 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
     spawn_stale_check(check_tx);
 
     let (_session, mut terminal) = super::open_modal()?;
-    query = super::take_typeahead();
+    let mut query = super::take_typeahead();
     let bg_snapshot = bg
         .cloned()
         .unwrap_or_else(BackgroundSnapshot::default_initial);
