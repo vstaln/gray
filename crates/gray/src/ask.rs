@@ -53,6 +53,9 @@ pub struct AskQuestion {
     /// `edited:` instead of `user_note:`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub editable: bool,
+
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 impl AskQuestion {
@@ -811,7 +814,11 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
                 cursor = rows.len();
             }
             if here && (editing || !note.is_empty()) {
-                rows.push(("*".to_string(), o.label.clone(), state.notes[qi].clone()));
+                rows.push((
+                    "*".to_string(),
+                    o.label.clone(),
+                    shown_note(q, &state.notes[qi]),
+                ));
                 continue;
             }
             let desc = match o.scopes.len() {
@@ -852,8 +859,8 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
         }
         let freeform = state.is_freeform(qi, i);
         let label = state.option_label(qi, i).to_string();
-        if freeform && (editing || !note.is_empty()) {
-            rows.push(("*".to_string(), label, state.notes[qi].clone()));
+        if freeform && i == state.cursor[qi] && (editing || !note.is_empty()) {
+            rows.push(("*".to_string(), label, shown_note(q, &state.notes[qi])));
             continue;
         }
         let shown = i - first;
@@ -905,6 +912,14 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
     (rows, cursor)
 }
 
+fn shown_note(q: &AskQuestion, note: &str) -> String {
+    if q.secret {
+        "\u{2022}".repeat(note.chars().count().min(32))
+    } else {
+        note.to_string()
+    }
+}
+
 fn draw_ask_modal(tui: &crate::composer::SharedTui, state: &mut AskModalState) {
     let mut t = t_lock(tui);
     if let Ok((_, screen_h)) = crossterm::terminal::size() {
@@ -952,6 +967,18 @@ fn run_ask_modal(
             _ => continue,
         }
         let Ok(ev) = read() else { continue };
+        if let Event::Paste(text) = &ev {
+            let i = state.idx;
+            let at = state.cursor[i];
+            if std::time::Instant::now() >= guard_until
+                && (state.is_freeform(i, at) || state.questions[i].compact())
+            {
+                state.editing[i] = true;
+                state.notes[i].push_str(text.trim_end_matches(['\r', '\n']));
+                draw_ask_modal(tui, state);
+            }
+            continue;
+        }
         let Event::Key(key) = ev else { continue };
         if key.kind == KeyEventKind::Release {
             continue;
@@ -963,6 +990,9 @@ fn run_ask_modal(
         let now = std::time::Instant::now();
         if now < guard_until {
             guard_until = now + GUARD;
+            if state.questions[state.idx].secret {
+                continue;
+            }
             if let KeyCode::Char(c) = key.code
                 && !key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key.modifiers.contains(KeyModifiers::ALT)
@@ -1145,26 +1175,39 @@ fn push_ask_summary(
             answers: answers
                 .iter()
                 .find(|a| a.id == q.id)
-                .map(|a| a.answers.clone())
+                .map(|a| {
+                    if q.secret {
+                        a.answers
+                            .iter()
+                            .map(|x| {
+                                if x.starts_with("user_note: ") {
+                                    "value hidden".to_string()
+                                } else {
+                                    x.clone()
+                                }
+                            })
+                            .collect()
+                    } else {
+                        a.answers.clone()
+                    }
+                })
                 .unwrap_or_default(),
         })
         .collect();
     t.push_tool_box(asked_header(rows.len()), asked_lines(&rows, "skipped"));
 }
 
-static SECRET_PROMPT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+const SAVE_PERMANENTLY: &str = "Save permanently";
 
 pub async fn handle_secret(params: serde_json::Value) -> serde_json::Value {
-    let svc = SERVICE.lock().expect("ask service").clone();
-    let Some((svc, tui)) = svc.and_then(|svc| match &svc.driver {
-        AskDriver::Tui(t) => {
-            let t = t.clone();
-            Some((svc, t))
-        }
-        _ => None,
-    }) else {
+    let tui_driven = SERVICE
+        .lock()
+        .expect("ask service")
+        .as_ref()
+        .is_some_and(|svc| matches!(svc.driver, AskDriver::Tui(_)));
+    if !tui_driven {
         return serde_json::json!({"error": "no interactive prompt available"});
-    };
+    }
     let text = |key: &str| {
         params
             .get(key)
@@ -1178,121 +1221,45 @@ pub async fn handle_secret(params: serde_json::Value) -> serde_json::Value {
         title = "Secret".to_string();
     }
     let purpose = text("purpose");
-    let allow_persist = params
-        .get("allow_persist")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let _turn = SECRET_PROMPT.lock().await;
-    if svc.cancel.is_cancelled() {
+    let question = if purpose.is_empty() {
+        title.clone()
+    } else {
+        format!("{title}\n{purpose}")
+    };
+    let mut options = Vec::new();
+    if params.get("allow_persist").and_then(|v| v.as_bool()) == Some(true) {
+        options.push(serde_json::json!({"label": SAVE_PERMANENTLY, "description": "type or paste, kept in the system keyring", "freeform": true}));
+    }
+    options.push(serde_json::json!({"label": "This session only", "description": "type or paste, forgotten when gray exits", "freeform": true}));
+    let reply = handle_ask(serde_json::json!({
+        "blocking": true,
+        "questions": [{
+            "id": "secret",
+            "header": "Secret",
+            "question": question,
+            "options": options,
+            "no_other": true,
+            "secret": true,
+        }],
+    }))
+    .await;
+    let picked: Vec<String> = reply
+        .pointer("/answers/secret/answers")
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let value = picked
+        .iter()
+        .find_map(|a| a.strip_prefix("user_note: "))
+        .map(str::to_string)
+        .unwrap_or_default();
+    if value.is_empty() {
         return serde_json::json!({"declined": true});
     }
-    let cancel = svc.cancel.clone();
-    let entered = tokio::task::spawn_blocking(move || {
-        let saved_status = t_lock(&tui).take_status();
-        t_lock(&tui).set_status(Some("Secret"));
-        let entered = run_secret_modal(&tui, &title, &purpose, allow_persist, &cancel);
-        let mut t = t_lock(&tui);
-        t.ask_modal = None;
-        t.restore_status(saved_status);
-        let _ = t.draw();
-        entered
-    })
-    .await
-    .ok()
-    .flatten();
-    match entered {
-        Some((value, persist)) => serde_json::json!({"value": value, "persist": persist}),
-        None => serde_json::json!({"declined": true}),
-    }
-}
-
-fn secret_rows(
-    title: &str,
-    purpose: &str,
-    value_len: usize,
-    persist: Option<bool>,
-) -> crate::composer::AskModal {
-    let row = |kind: &str, label: &str, text: String| (kind.to_string(), label.to_string(), text);
-    let mut rows = vec![row("?", title, "Secret".to_string())];
-    for l in purpose.lines().filter(|l| !l.trim().is_empty()) {
-        rows.push(row(">", "", l.trim_end().to_string()));
-    }
-    rows.push(row(" ", "", String::new()));
-    let cursor = rows.len();
-    rows.push(row("*", "Value", "\u{2022}".repeat(value_len.min(32))));
-    let mut hint = "enter submit".to_string();
-    if let Some(on) = persist {
-        rows.push(row(
-            if on { "[x]" } else { "[ ]" },
-            "Save permanently",
-            String::new(),
-        ));
-        hint.push_str(" \u{b7} tab save");
-    }
-    hint.push_str(" \u{b7} esc decline");
-    rows.push(row(" ", "", String::new()));
-    rows.push(row("\u{b7}", "", hint));
-    crate::composer::AskModal { rows, cursor }
-}
-
-fn run_secret_modal(
-    tui: &crate::composer::SharedTui,
-    title: &str,
-    purpose: &str,
-    allow_persist: bool,
-    cancel: &tokio_util::sync::CancellationToken,
-) -> Option<(String, bool)> {
-    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, poll, read};
-    const GUARD: std::time::Duration = std::time::Duration::from_millis(600);
-    let mut value = String::new();
-    let mut persist = false;
-    let draw = |value: &str, persist: bool| {
-        let mut t = t_lock(tui);
-        t.ask_modal = Some(secret_rows(
-            title,
-            purpose,
-            value.chars().count(),
-            allow_persist.then_some(persist),
-        ));
-        let _ = t.draw();
-    };
-    draw(&value, persist);
-    let mut guard_until = std::time::Instant::now() + GUARD;
-    loop {
-        if cancel.is_cancelled() {
-            return None;
-        }
-        match poll(std::time::Duration::from_millis(100)) {
-            Ok(true) => {}
-            _ => continue,
-        }
-        let Ok(ev) = read() else { continue };
-        let now = std::time::Instant::now();
-        if now < guard_until && matches!(ev, Event::Key(_) | Event::Paste(_)) {
-            guard_until = now + GUARD;
-            continue;
-        }
-        match ev {
-            Event::Paste(text) => value.push_str(text.trim_end_matches(['\r', '\n'])),
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                match key.code {
-                    KeyCode::Char('c') if ctrl => return None,
-                    KeyCode::Char('u') if ctrl => value.clear(),
-                    KeyCode::Esc => return None,
-                    KeyCode::Enter if !value.is_empty() => return Some((value, persist)),
-                    KeyCode::Tab if allow_persist => persist = !persist,
-                    KeyCode::Backspace => {
-                        value.pop();
-                    }
-                    KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
-                        value.push(c)
-                    }
-                    _ => continue,
-                }
-            }
-            _ => continue,
-        }
-        draw(&value, persist);
-    }
+    let persist = picked.iter().any(|a| a == SAVE_PERMANENTLY);
+    serde_json::json!({"value": value, "persist": persist})
 }
