@@ -228,7 +228,9 @@ fn frame(tui: &mut Tui, paint: bool) -> anyhow::Result<()> {
     } else {
         1 + n.min(3) as u16 + u16::from(n > 3) + 1
     };
-    let search_h: u16 = u16::from(tui.search.is_some());
+    let search_h: u16 = u16::from(
+        tui.search.is_some() || !matches!(tui.action, crate::composer::action::ActionState::Idle),
+    );
 
     let ask_est: u16 = tui
         .ask_modal
