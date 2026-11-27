@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.2.34] - 2026-11-27
+
+### Added
+- **Masked ask prompts and fail-closed plugin hooks.** Plugins can ask the terminal UI for masked input through `host/ask` (`masked: true`) using the inline question panel, and manifests can declare `required_hooks` so a failed `tool/after` hook withholds tool output.
+- **Claude Code plugins and provider presence.** Gray loads Claude Code plugins and tracks provider presence across sessions.
+
+### Changed
+- **Man-page help and stricter flag validation for `kit`.** `kit <tool> --help` now formats usage, required arguments, options, defaults, and stdin hints cleanly, rejects undeclared flags, errors on value-less flags, and supports repeatable list flags.
+- **`kit` tool cards drop the `Ran` verb.** Tool cards now display `kit ...` directly, matching `gray <subcommand>` cards.
+- **`/continue` always hands off into a fresh session.** Running `/continue` in an active chat now starts a fresh session carrying the last request, current state, and a `kit recall` command for earlier turns.
+- **Cleaner pickers and ask prompts.** Pickers keep type-ahead and paste, ignore leading spaces in model and plugin filters, label the space key, and drop redundant `1-2 choose` hints and `value hidden` summaries from ask prompts.
+
+### Fixed
+- **Resize reflow capped at the last 1,000 rows.** Resizing a terminal or splitting a pane no longer replays the entire conversation history, preventing multi-second redraw stalls over Windows ConPTY.
+- **ACP context accounting and tool-result images.** `gray-acp` prefers `usage_update` for single-call context sizing and attaches images returned by tools directly to the resolved MCP tool result.
+- **Layout and popup polish.** The narrowed slash completion popup fits drawn matches, the plugin action banner reserves its own row above the composer, and pressing Enter on an unticked multi-select row ticks it before confirming.
+
 ## [0.2.33] - 2026-11-26
 
 ### Fixed
