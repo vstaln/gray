@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AskOption {
     pub label: String,
+    #[serde(default)]
     pub description: String,
 
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -55,7 +56,7 @@ pub struct AskQuestion {
     pub editable: bool,
 
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub secret: bool,
+    pub masked: bool,
 }
 
 impl AskQuestion {
@@ -216,7 +217,7 @@ pub async fn handle_ask(params: serde_json::Value) -> serde_json::Value {
     if questions.is_empty() {
         return serde_json::json!({ "answers": {} });
     }
-    if questions.iter().any(|q| q.secret) && !matches!(svc.driver, AskDriver::Tui(_)) {
+    if questions.iter().any(|q| q.masked) && !matches!(svc.driver, AskDriver::Tui(_)) {
         return serde_json::json!({"error": "no interactive prompt available"});
     }
     if !blocking {
@@ -916,7 +917,7 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
 }
 
 fn shown_note(q: &AskQuestion, note: &str) -> String {
-    if q.secret {
+    if q.masked {
         "\u{2022}".repeat(note.chars().count().min(32))
     } else {
         note.to_string()
@@ -993,7 +994,7 @@ fn run_ask_modal(
         let now = std::time::Instant::now();
         if now < guard_until {
             guard_until = now + GUARD;
-            if state.questions[state.idx].secret {
+            if state.questions[state.idx].masked {
                 continue;
             }
             if let KeyCode::Char(c) = key.code
@@ -1181,7 +1182,7 @@ fn push_ask_summary(
                 .iter()
                 .find(|a| a.id == q.id)
                 .map(|a| {
-                    if q.secret {
+                    if q.masked {
                         a.answers
                             .iter()
                             .map(|x| {

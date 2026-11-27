@@ -197,7 +197,14 @@ pub(crate) fn draw_list_picker<T>(
         .map(|item| (picker.label)(item).chars().count())
         .max()
         .unwrap_or(0);
-    let letters: Vec<String> = pick_keys.keys.iter().map(|(c, _)| c.to_string()).collect();
+    let letters: Vec<String> = pick_keys
+        .keys
+        .iter()
+        .map(|(c, _)| match c {
+            ' ' => "space".to_string(),
+            c => c.to_string(),
+        })
+        .collect();
     let mut hints = vec![
         ("↑↓", "move", true),
         ("enter", pick_keys.enter.unwrap_or("select"), true),

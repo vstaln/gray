@@ -88,7 +88,7 @@ class TheOneLinerWorks(unittest.TestCase):
         self.assertIn('[scriptblock]::Create(', INSTALL)
 
     def test_release_publishes_install_native_beside_install_ps1(self):
-        self.assertGreaterEqual(RELEASE.count('/var/www/gray/install-native.ps1'), 2)
+        self.assertGreaterEqual(RELEASE.count('/home/ubuntu/www/gray/install-native.ps1'), 2)
 
     def test_checksum_comes_from_the_published_sums_file(self):
 
