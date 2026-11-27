@@ -1,5 +1,7 @@
 use super::*;
 
+const REFLOW_REPLAY_ROWS: usize = 1000;
+
 impl Tui {
     pub(crate) fn reanchor_viewport(&mut self, cols: u16) {
         self.last_width = cols;
@@ -195,6 +197,9 @@ impl Tui {
             }
         }
         self.history_entries = entries;
+        if let Some(rows) = &mut self.insert_batch {
+            rows.drain(..rows.len().saturating_sub(REFLOW_REPLAY_ROWS));
+        }
         self.end_insert_batch();
 
         let _ = self.draw();
