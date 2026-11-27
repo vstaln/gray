@@ -890,16 +890,12 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
         ));
     }
     let arrows = crate::tui::glyph("\u{2191}\u{2193}", "up/down");
-    let keys = match (last - first).min(9) {
-        0 | 1 => "1".to_string(),
-        n => format!("1-{n}"),
-    };
     let back = if qi > 0 { " \u{b7} shift-tab back" } else { "" };
     let hint = if editing {
         "enter submit \u{b7} esc back".to_string()
     } else if multi {
         format!(
-            "{arrows} move \u{b7} space or {keys} toggle{back} \u{b7} enter pick, enter on a picked row confirms \u{b7} esc cancel"
+            "{arrows} move \u{b7} space toggle{back} \u{b7} enter pick, enter on a picked row confirms \u{b7} esc cancel"
         )
     } else {
         let edit = if state.questions[qi].editable {
@@ -907,9 +903,7 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
         } else {
             ""
         };
-        format!(
-            "{arrows} select \u{b7} {keys} choose{edit}{back} \u{b7} enter confirm \u{b7} esc cancel"
-        )
+        format!("{arrows} select{edit}{back} \u{b7} enter confirm \u{b7} esc cancel")
     };
     rows.push(row(" ", String::new(), String::new()));
     rows.push(row("\u{b7}", String::new(), hint));
@@ -1185,13 +1179,8 @@ fn push_ask_summary(
                     if q.masked {
                         a.answers
                             .iter()
-                            .map(|x| {
-                                if x.starts_with("user_note: ") {
-                                    "value hidden".to_string()
-                                } else {
-                                    x.clone()
-                                }
-                            })
+                            .filter(|x| !x.starts_with("user_note: "))
+                            .cloned()
                             .collect()
                     } else {
                         a.answers.clone()
