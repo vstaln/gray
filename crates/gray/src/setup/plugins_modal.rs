@@ -720,7 +720,11 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                             };
                         }
 
-                        KeyCode::Char(c) if !modifiers.contains(KeyModifiers::ALT) && c != '/' => {
+                        KeyCode::Char(c)
+                            if !modifiers.contains(KeyModifiers::ALT)
+                                && c != '/'
+                                && !(query.is_empty() && c == ' ') =>
+                        {
                             query.push(c);
                             sel = 0;
                         }
