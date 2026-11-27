@@ -753,7 +753,10 @@ fn parse_compact_at_cli(s: &str) -> Result<crate::setup::CompactAt, String> {
 
 #[derive(Parser, Debug, Clone)]
 pub enum Commands {
-    #[command(about = "Call a plugin, MCP, or host tool from the live session")]
+    #[command(
+        about = "Call a plugin, MCP, or host tool from the live session",
+        disable_help_flag = true
+    )]
     Kit {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,

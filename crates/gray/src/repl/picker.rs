@@ -244,7 +244,9 @@ pub(crate) fn draw_list_picker<T>(
     let bottom = inner.y + inner.height;
     let row = |y: u16| Rect::new(inner.x, y, inner.width, 1);
 
-    let mut filter = if query.is_empty() {
+    let mut filter = if query.is_empty() && picker.items.len() <= list_h {
+        Vec::new()
+    } else if query.is_empty() {
         vec![Span::styled("type to filter ", fg(th.text_faint))]
     } else {
         vec![

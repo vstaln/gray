@@ -6,8 +6,8 @@ const USAGE: &str = "Usage:
   kit                       list available kit tools
   kit --list                list available kit tools
   kit search <query>        search tools by keyword
-  kit <tool> --help         show tool flags and parameter schema
-  kit <tool> [FLAGS]        run a tool (--key val, --flag, --json '{...}', or stdin JSON)
+  kit <tool> --help         show a tool's flags
+  kit <tool> --flag value   run a tool (nested input: a JSON object on stdin via <<'EOF')
   kit <server> <tool> ...   run an MCP server tool";
 
 fn send_request(req: &Value) -> anyhow::Result<Value> {
