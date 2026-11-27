@@ -483,7 +483,7 @@ pub(crate) fn run_list_picker_keys<T>(
                         }
                     }
                     KeyCode::Char(c)
-                        if query.is_empty()
+                        if (query.is_empty() || c == ' ')
                             && modifiers.is_empty()
                             && pick_keys.keys.iter().any(|(k, _)| *k == c) =>
                     {
