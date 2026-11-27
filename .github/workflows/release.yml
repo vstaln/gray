@@ -15,8 +15,8 @@ name: release
 # half-published set after the manifest swap. Downloads during promotion may retry.
 #
 # Rollback: re-point the manifest at the previous set. Old tarballs are never
-# deleted by deploy, so: echo '<prev-ver>' | ssh <host> "sudo tee
-# /var/www/gray/dl/latest-<channel>.txt". Manual single-leg uploads are
+# deleted by deploy, so: echo '<prev-ver>' | ssh <host> "tee
+# /home/ubuntu/www/gray/dl/latest-<channel>.txt". Manual single-leg uploads are
 # NOT atomic — re-run the finalize job after any manual upload.
 
 on:
@@ -152,11 +152,11 @@ jobs:
         shell: bash
         run: |
           CHANNEL="${{ needs.meta.outputs.channel }}"
-          SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
-          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes "$TAR" "SHA256SUMS-${{ matrix.plat }}" opc@168.110.210.65:/tmp/
-          $SSH "sudo mkdir -p /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }} \
-            && sudo install -m 644 /tmp/$TAR /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/$TAR \
-            && sudo install -m 644 /tmp/SHA256SUMS-${{ matrix.plat }} /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/SHA256SUMS-${{ matrix.plat }} \
+          SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes ubuntu@168.110.203.180"
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes "$TAR" "SHA256SUMS-${{ matrix.plat }}" ubuntu@168.110.203.180:/tmp/
+          $SSH "mkdir -p /home/ubuntu/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }} \
+            && install -m 644 /tmp/$TAR /home/ubuntu/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/$TAR \
+            && install -m 644 /tmp/SHA256SUMS-${{ matrix.plat }} /home/ubuntu/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/SHA256SUMS-${{ matrix.plat }} \
             && rm -f /tmp/$TAR /tmp/SHA256SUMS-${{ matrix.plat }}"
 
 
@@ -228,11 +228,11 @@ jobs:
         shell: bash
         run: |
           CHANNEL="${{ needs.meta.outputs.channel }}"
-          SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
-          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes "$TAR" "SHA256SUMS-x86_64-windows" opc@168.110.210.65:/tmp/
-          $SSH "sudo mkdir -p /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }} \
-            && sudo install -m 644 /tmp/$TAR /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/$TAR \
-            && sudo install -m 644 /tmp/SHA256SUMS-x86_64-windows /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/SHA256SUMS-x86_64-windows \
+          SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes ubuntu@168.110.203.180"
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes "$TAR" "SHA256SUMS-x86_64-windows" ubuntu@168.110.203.180:/tmp/
+          $SSH "mkdir -p /home/ubuntu/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }} \
+            && install -m 644 /tmp/$TAR /home/ubuntu/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/$TAR \
+            && install -m 644 /tmp/SHA256SUMS-x86_64-windows /home/ubuntu/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/SHA256SUMS-x86_64-windows \
             && rm -f /tmp/$TAR /tmp/SHA256SUMS-x86_64-windows"
 
 
@@ -250,14 +250,14 @@ jobs:
         run: |
           CHANNEL="${{ needs.meta.outputs.channel }}"
           VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
-          SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
-          $SSH "cd /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }} && cat SHA256SUMS-* > /tmp/SHA256SUMS-$CHANNEL && sha256sum -c /tmp/SHA256SUMS-$CHANNEL && sudo install -m 644 /tmp/SHA256SUMS-$CHANNEL /var/www/gray/dl/SHA256SUMS-$CHANNEL"
-          $SSH "sudo cp /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/gray-$CHANNEL-*.tar.gz /var/www/gray/dl/ && sudo cp /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/gray-$CHANNEL-*.zip /var/www/gray/dl/"
+          SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes ubuntu@168.110.203.180"
+          $SSH "cd /home/ubuntu/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }} && cat SHA256SUMS-* > /tmp/SHA256SUMS-$CHANNEL && sha256sum -c /tmp/SHA256SUMS-$CHANNEL && install -m 644 /tmp/SHA256SUMS-$CHANNEL /home/ubuntu/www/gray/dl/SHA256SUMS-$CHANNEL"
+          $SSH "cp /home/ubuntu/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/gray-$CHANNEL-*.tar.gz /home/ubuntu/www/gray/dl/ && cp /home/ubuntu/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/gray-$CHANNEL-*.zip /home/ubuntu/www/gray/dl/"
           # install.ps1 fetches install-native.ps1 from beside itself on the site.
-          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist/install.sh dist/install-core.sh dist/install.ps1 dist/install-core.ps1 dist/install-native.ps1 opc@168.110.210.65:/tmp/
-          $SSH "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install-core.sh /var/www/gray/install-core.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && sudo install -m 644 /tmp/install-core.ps1 /var/www/gray/install-core.ps1 && sudo install -m 644 /tmp/install-native.ps1 /var/www/gray/install-native.ps1"
-          echo "${{ github.sha }}" | $SSH "sudo tee /var/www/gray/dl/latest-$CHANNEL-build.txt > /dev/null"
-          echo "$VER" | $SSH "sudo tee /var/www/gray/dl/latest-$CHANNEL.txt > /dev/null"
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist/install.sh dist/install-core.sh dist/install.ps1 dist/install-core.ps1 dist/install-native.ps1 ubuntu@168.110.203.180:/tmp/
+          $SSH "install -m 644 /tmp/install.sh /home/ubuntu/www/gray/install.sh && install -m 644 /tmp/install-core.sh /home/ubuntu/www/gray/install-core.sh && install -m 644 /tmp/install.ps1 /home/ubuntu/www/gray/install.ps1 && install -m 644 /tmp/install-core.ps1 /home/ubuntu/www/gray/install-core.ps1 && install -m 644 /tmp/install-native.ps1 /home/ubuntu/www/gray/install-native.ps1"
+          echo "${{ github.sha }}" | $SSH "tee /home/ubuntu/www/gray/dl/latest-$CHANNEL-build.txt > /dev/null"
+          echo "$VER" | $SSH "tee /home/ubuntu/www/gray/dl/latest-$CHANNEL.txt > /dev/null"
           echo "✓ latest-$CHANNEL.txt = $VER"
           for f in ../install.sh ../install.ps1 ../install-native.ps1 ../install-core.sh ../install-core.ps1 gray-$CHANNEL-x86_64-linux.tar.gz gray-$CHANNEL-aarch64-linux.tar.gz gray-$CHANNEL-aarch64-darwin.tar.gz gray-$CHANNEL-x86_64-darwin.tar.gz gray-$CHANNEL-x86_64-windows.zip latest-$CHANNEL.txt SHA256SUMS-$CHANNEL latest-$CHANNEL-build.txt; do
             if ! code=$(curl -sI -o /dev/null -w "%{http_code}" --retry 3 --retry-all-errors --max-time 30 "https://gray.alignment.id/dl/$f"); then
@@ -303,5 +303,5 @@ jobs:
         run: |
           case "$GITHUB_REF_NAME" in *-*) CHANNEL=beta ;; *) CHANNEL=stable ;; esac
           cp dist-all/SHA256SUMS "dist-all/SHA256SUMS-$CHANNEL"
-          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist-all/SHA256SUMS "dist-all/SHA256SUMS-$CHANNEL" dist/install.sh dist/install-core.sh dist/install.ps1 dist/install-core.ps1 dist/install-native.ps1 opc@168.110.210.65:/tmp/
-          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/SHA256SUMS /var/www/gray/dl/SHA256SUMS && sudo install -m 644 /tmp/SHA256SUMS-$CHANNEL /var/www/gray/dl/SHA256SUMS-$CHANNEL && sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install-core.sh /var/www/gray/install-core.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && sudo install -m 644 /tmp/install-core.ps1 /var/www/gray/install-core.ps1 && sudo install -m 644 /tmp/install-native.ps1 /var/www/gray/install-native.ps1 && rm -f /tmp/SHA256SUMS /tmp/SHA256SUMS-$CHANNEL /tmp/install.sh /tmp/install.ps1 /tmp/install-native.ps1 /tmp/install-core.sh /tmp/install-core.ps1 && echo '✓ sums + installers live: https://gray.alignment.id/dl/SHA256SUMS-'"$CHANNEL
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist-all/SHA256SUMS "dist-all/SHA256SUMS-$CHANNEL" dist/install.sh dist/install-core.sh dist/install.ps1 dist/install-core.ps1 dist/install-native.ps1 ubuntu@168.110.203.180:/tmp/
+          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes ubuntu@168.110.203.180 "install -m 644 /tmp/SHA256SUMS /home/ubuntu/www/gray/dl/SHA256SUMS && install -m 644 /tmp/SHA256SUMS-$CHANNEL /home/ubuntu/www/gray/dl/SHA256SUMS-$CHANNEL && install -m 644 /tmp/install.sh /home/ubuntu/www/gray/install.sh && install -m 644 /tmp/install-core.sh /home/ubuntu/www/gray/install-core.sh && install -m 644 /tmp/install.ps1 /home/ubuntu/www/gray/install.ps1 && install -m 644 /tmp/install-core.ps1 /home/ubuntu/www/gray/install-core.ps1 && install -m 644 /tmp/install-native.ps1 /home/ubuntu/www/gray/install-native.ps1 && rm -f /tmp/SHA256SUMS /tmp/SHA256SUMS-$CHANNEL /tmp/install.sh /tmp/install.ps1 /tmp/install-native.ps1 /tmp/install-core.sh /tmp/install-core.ps1 && echo '✓ sums + installers live: https://gray.alignment.id/dl/SHA256SUMS-'"$CHANNEL

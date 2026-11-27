@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AskOption {
     pub label: String,
+    #[serde(default)]
     pub description: String,
 
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -53,6 +54,9 @@ pub struct AskQuestion {
     /// `edited:` instead of `user_note:`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub editable: bool,
+
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub masked: bool,
 }
 
 impl AskQuestion {
@@ -212,6 +216,9 @@ pub async fn handle_ask(params: serde_json::Value) -> serde_json::Value {
     };
     if questions.is_empty() {
         return serde_json::json!({ "answers": {} });
+    }
+    if questions.iter().any(|q| q.masked) && !matches!(svc.driver, AskDriver::Tui(_)) {
+        return serde_json::json!({"error": "no interactive prompt available"});
     }
     if !blocking {
         return serde_json::json!({ "answers": {} });
@@ -811,7 +818,11 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
                 cursor = rows.len();
             }
             if here && (editing || !note.is_empty()) {
-                rows.push(("*".to_string(), o.label.clone(), state.notes[qi].clone()));
+                rows.push((
+                    "*".to_string(),
+                    o.label.clone(),
+                    shown_note(q, &state.notes[qi]),
+                ));
                 continue;
             }
             let desc = match o.scopes.len() {
@@ -852,8 +863,8 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
         }
         let freeform = state.is_freeform(qi, i);
         let label = state.option_label(qi, i).to_string();
-        if freeform && (editing || !note.is_empty()) {
-            rows.push(("*".to_string(), label, state.notes[qi].clone()));
+        if freeform && i == state.cursor[qi] && (editing || !note.is_empty()) {
+            rows.push(("*".to_string(), label, shown_note(q, &state.notes[qi])));
             continue;
         }
         let shown = i - first;
@@ -888,7 +899,7 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
         "enter submit \u{b7} esc back".to_string()
     } else if multi {
         format!(
-            "{arrows} move \u{b7} space or {keys} toggle{back} \u{b7} enter confirm \u{b7} esc cancel"
+            "{arrows} move \u{b7} space or {keys} toggle{back} \u{b7} enter pick, enter on a picked row confirms \u{b7} esc cancel"
         )
     } else {
         let edit = if state.questions[qi].editable {
@@ -903,6 +914,14 @@ pub(crate) fn ask_rows(state: &AskModalState) -> (Vec<(String, String, String)>,
     rows.push(row(" ", String::new(), String::new()));
     rows.push(row("\u{b7}", String::new(), hint));
     (rows, cursor)
+}
+
+fn shown_note(q: &AskQuestion, note: &str) -> String {
+    if q.masked {
+        "\u{2022}".repeat(note.chars().count().min(32))
+    } else {
+        note.to_string()
+    }
 }
 
 fn draw_ask_modal(tui: &crate::composer::SharedTui, state: &mut AskModalState) {
@@ -952,6 +971,18 @@ fn run_ask_modal(
             _ => continue,
         }
         let Ok(ev) = read() else { continue };
+        if let Event::Paste(text) = &ev {
+            let i = state.idx;
+            let at = state.cursor[i];
+            if std::time::Instant::now() >= guard_until
+                && (state.is_freeform(i, at) || state.questions[i].compact())
+            {
+                state.editing[i] = true;
+                state.notes[i].push_str(text.trim_end_matches(['\r', '\n']));
+                draw_ask_modal(tui, state);
+            }
+            continue;
+        }
         let Event::Key(key) = ev else { continue };
         if key.kind == KeyEventKind::Release {
             continue;
@@ -963,6 +994,9 @@ fn run_ask_modal(
         let now = std::time::Instant::now();
         if now < guard_until {
             guard_until = now + GUARD;
+            if state.questions[state.idx].masked {
+                continue;
+            }
             if let KeyCode::Char(c) = key.code
                 && !key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key.modifiers.contains(KeyModifiers::ALT)
@@ -1053,6 +1087,8 @@ fn run_ask_modal(
                 let c = state.cursor[i];
                 if state.is_freeform(i, c) {
                     state.editing[i] = true;
+                } else if multi && !state.checked[i][c] {
+                    state.checked[i][c] = true;
                 } else {
                     submit = state.advance();
                 }
@@ -1145,7 +1181,22 @@ fn push_ask_summary(
             answers: answers
                 .iter()
                 .find(|a| a.id == q.id)
-                .map(|a| a.answers.clone())
+                .map(|a| {
+                    if q.masked {
+                        a.answers
+                            .iter()
+                            .map(|x| {
+                                if x.starts_with("user_note: ") {
+                                    "value hidden".to_string()
+                                } else {
+                                    x.clone()
+                                }
+                            })
+                            .collect()
+                    } else {
+                        a.answers.clone()
+                    }
+                })
                 .unwrap_or_default(),
         })
         .collect();

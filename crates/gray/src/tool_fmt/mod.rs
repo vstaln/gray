@@ -151,7 +151,6 @@ fn extract_partial_scalar(
 ) -> Option<serde_json::Value> {
     let key = match name {
         "bash" => "command",
-        "skill" => "name",
         _ => preview
             .and_then(first_placeholder_key)
             .filter(|key| find_key_value_start(raw, key).is_some())
@@ -311,46 +310,6 @@ fn sole_heredoc(command: &str) -> Option<(String, Option<String>)> {
         return None;
     }
     Some((body.join("\n"), target))
-}
-
-fn skill_display_name(args: &serde_json::Value) -> String {
-    if let Some(n) = args
-        .get("name")
-        .or_else(|| args.get("skill"))
-        .and_then(|v| v.as_str())
-    {
-        let t = n.trim();
-        if !t.is_empty() {
-            return t.to_string();
-        }
-    }
-    if let Some(p) = args
-        .get("path")
-        .or_else(|| args.get("location"))
-        .and_then(|v| v.as_str())
-    {
-        let t = p.trim();
-        if !t.is_empty() {
-            let path = Path::new(t);
-            if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
-                if fname == "SKILL.md" {
-                    if let Some(parent) = path
-                        .parent()
-                        .and_then(|p| p.file_name())
-                        .and_then(|n| n.to_str())
-                    {
-                        return parent.to_string();
-                    }
-                } else if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    return stem.to_string();
-                } else {
-                    return fname.to_string();
-                }
-            }
-            return t.to_string();
-        }
-    }
-    "skill".to_string()
 }
 
 pub fn preview_at(args: &serde_json::Value, spec: &str) -> Option<String> {
@@ -742,14 +701,6 @@ pub fn format_tool_call_lines(
                 Span::styled(shorten_path(raw_path, cwd), path_style),
             ])
         }
-        "skill" => {
-            let skill_name = skill_display_name(args);
-            Line::from(vec![
-                bullet,
-                Span::styled("Skill ", action_style),
-                Span::styled(format!("\"{skill_name}\""), cmd_style),
-            ])
-        }
         "request_user_input" => {
             let n = args
                 .get("questions")
@@ -921,9 +872,6 @@ fn bash_header(
                     dim_style,
                 );
             }
-            if !background && let Some(mem) = memory_label(core.command) {
-                return memory_line(mem, bullet, action_style, cmd_style, dim_style);
-            }
             let gray_cli = gray_cli_command(core.command);
             let shown = gray_cli.unwrap_or(core.command);
             let cut = truncate_cmd(shown);
@@ -990,78 +938,7 @@ pub(crate) fn verbless_card(name: &str, args: &serde_json::Value) -> bool {
     if !background && gray_tools::shell::label::read_only(full).is_some() {
         return false;
     }
-    if !background && memory_label(core.command).is_some() {
-        return false;
-    }
     gray_cli_command(core.command).is_some()
-}
-
-/// A `gray memory …` shell call, labeled like a tool row ("Remembered KEY ·
-/// text") instead of echoing the raw command line.
-#[derive(Debug, PartialEq)]
-struct MemoryLabel {
-    verb: &'static str,
-    key: Option<String>,
-    text: Option<String>,
-}
-
-fn memory_line(
-    mem: MemoryLabel,
-    bullet: Span<'static>,
-    action_style: Style,
-    cmd_style: Style,
-    dim_style: Style,
-) -> Line<'static> {
-    let mut spans = vec![bullet, Span::styled(mem.verb, action_style)];
-    if let Some(key) = mem.key {
-        spans.push(Span::styled(key, cmd_style));
-    }
-    if let Some(text) = mem.text {
-        let text = ellipsize_cells(&text);
-        spans.push(Span::styled(format!(" \u{00b7} {text}"), dim_style));
-    }
-    Line::from(spans)
-}
-
-fn memory_label(command: &str) -> Option<MemoryLabel> {
-    let words = shlex::split(command)?;
-    let mut it = words.iter().map(String::as_str).peekable();
-    match it.next()? {
-        "gray" if it.next()? == "memory" => {}
-        "gray-memory" => {}
-        _ => return None,
-    }
-    // Leading globals (`--scope user`) may sit before the subcommand too.
-    let mut pos: Vec<&str> = Vec::new();
-    while let Some(w) = it.next() {
-        if w == "--" {
-            pos.extend(it.by_ref());
-            break;
-        }
-        if let Some(flag) = w.strip_prefix("--") {
-            if !flag.contains('=') && matches!(flag, "scope" | "project" | "why") {
-                it.next();
-            }
-            continue;
-        }
-        pos.push(w);
-    }
-    let (sub, rest) = pos.split_first()?;
-    let key = rest.first().map(|k| (*k).to_string());
-    let text = rest.get(1..).filter(|t| !t.is_empty()).map(|t| t.join(" "));
-    let (verb, key, text) = match *sub {
-        "set" | "ingest-set" => ("Remembered ", key, text),
-        "edit" | "ingest-edit" => ("Updated memory ", key, text),
-        "remove" => ("Forgot ", key, None),
-        "show" => ("Recalled ", key, None),
-        "list" => ("Listed memories", None, None),
-        "clear" => ("Cleared memory", None, None),
-        _ => return None,
-    };
-    if verb.ends_with(' ') && key.is_none() {
-        return None;
-    }
-    Some(MemoryLabel { verb, key, text })
 }
 
 fn read_header(
@@ -1148,12 +1025,6 @@ pub fn bash_output_elapsed(output: &str) -> Option<&str> {
 
 pub(crate) fn live_bash_verb(done: &str) -> Option<&'static str> {
     Some(match done {
-        "Remembered " => "Remembering ",
-        "Updated memory " => "Updating memory ",
-        "Forgot " => "Forgetting ",
-        "Recalled " => "Recalling ",
-        "Listed memories" => "Listing memories",
-        "Cleared memory" => "Clearing memory",
         "Ran " => "Running ",
         "Skipped " => "Skipping ",
         "Started " => "Starting ",
@@ -1465,17 +1336,20 @@ fn render_numbered_lines(
     lines
 }
 
-/// Whether a tool's result text gets a numbered body under its card.
-///
-/// Every tool does (core, plugin and MCP alike) except the few whose output is
-/// either already on screen or too bulky to be useful: file contents from
-/// `read`, a skill's prompt text, the user's own `request_user_input` answer,
-/// and the Discord UI schema reference.
+static HIDDEN_BODIES: std::sync::RwLock<std::collections::BTreeSet<String>> =
+    std::sync::RwLock::new(std::collections::BTreeSet::new());
+
+pub fn note_hidden_bodies(defs: &[gray_core::message::ToolDef]) {
+    let mut set = HIDDEN_BODIES.write().unwrap_or_else(|e| e.into_inner());
+    set.extend(defs.iter().filter(|d| d.hide_body).map(|d| d.name.clone()));
+}
+
 pub fn tool_may_render_body(tool_name: &str) -> bool {
-    !matches!(
-        tool_name,
-        "read" | "skill" | "request_user_input" | "discord_ui_schema"
-    )
+    !matches!(tool_name, "read" | "request_user_input")
+        && !HIDDEN_BODIES
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(tool_name)
 }
 
 fn strip_shell_fence(trimmed: &str) -> String {
@@ -1655,65 +1529,3 @@ mod subagent;
 mod web;
 
 pub use plain::{format_tool_call_lines_plain, format_tool_result_plain_with_context};
-
-#[cfg(test)]
-mod memory_label_tests {
-    use super::{MemoryLabel, memory_label};
-
-    #[test]
-    fn a_memory_set_reads_as_remembered_key_and_text() {
-        let got = memory_label(
-            r#"gray memory set --scope user outreach-voice "short plain paragraphs, signs 'best, Grady'""#,
-        );
-        assert_eq!(
-            got,
-            Some(MemoryLabel {
-                verb: "Remembered ",
-                key: Some("outreach-voice".into()),
-                text: Some("short plain paragraphs, signs 'best, Grady'".into()),
-            })
-        );
-    }
-
-    #[test]
-    fn other_memory_verbs_and_non_memory_commands() {
-        assert_eq!(
-            memory_label("gray memory show k").unwrap().verb,
-            "Recalled "
-        );
-        assert_eq!(
-            memory_label("gray-memory remove k").unwrap().verb,
-            "Forgot "
-        );
-        assert_eq!(
-            memory_label("gray memory list").unwrap().verb,
-            "Listed memories"
-        );
-        assert_eq!(
-            memory_label("gray memory --scope=user edit k t")
-                .unwrap()
-                .verb,
-            "Updated memory "
-        );
-        // Unlabeled verbs, a missing key, and other programs fall back to "Ran".
-        assert_eq!(memory_label("gray memory audit"), None);
-        assert_eq!(memory_label("gray memory set"), None);
-        assert_eq!(memory_label("gray recall memory"), None);
-        assert_eq!(memory_label("echo gray memory set k v"), None);
-    }
-}
-
-#[cfg(test)]
-mod template_tests {
-    #[test]
-    fn count_filter_sizes_arrays_and_drops_when_absent() {
-        let spec = "{name} · fan out {tasks|count}";
-        let batch = serde_json::json!({"tasks": [{"prompt": "a"}, {"prompt": "b"}]});
-        assert_eq!(
-            super::preview_at(&batch, spec).as_deref(),
-            Some("fan out 2")
-        );
-        let one = serde_json::json!({"name": "probe"});
-        assert_eq!(super::preview_at(&one, spec).as_deref(), Some("probe"));
-    }
-}

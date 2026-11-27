@@ -241,10 +241,16 @@ impl Plugin for LazySidecarPlugin {
     }
 
     async fn tool_after(&self, name: &str, output: &ToolOutput) -> Option<ToolOutput> {
-        self.hook("tool/after")
-            .await?
-            .tool_after(name, output)
-            .await
+        if !self.manifest.claims("tool/after") {
+            return None;
+        }
+        match self.live().await {
+            Ok(p) => p.tool_after(name, output).await,
+            Err(e) if self.manifest.requires("tool/after") => {
+                Some(self.manifest.tool_after_withheld(&e))
+            }
+            Err(_) => None,
+        }
     }
 
     async fn run_command(

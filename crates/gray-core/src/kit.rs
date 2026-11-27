@@ -21,15 +21,7 @@ pub const DIRECT: &[&str] = &[
     "Grep",
     "Glob",
     "apply_patch",
-    "memory",
-    "skill",
-    "skills_install",
-    "web_search",
-    "web_fetch",
     "request_user_input",
-    "subagent_spawn",
-    "subagent_message",
-    "subagent_stop",
 ];
 
 pub const LINE_BYTES: usize = 100;
@@ -49,19 +41,19 @@ pub fn bash_only() -> bool {
         == Some("1")
 }
 
-pub fn is_direct(name: &str) -> bool {
+pub fn is_direct(t: &ToolDef) -> bool {
     if bash_only() {
-        return name == "bash";
+        return t.name == "bash";
     }
-    DIRECT.contains(&name)
+    t.direct || DIRECT.contains(&t.name.as_str())
 }
 
 pub fn def() -> ToolDef {
     ToolDef::new(
         NAME,
         "Run plugin, MCP, and host tools that are not listed directly. The <kit> menu in the \
-         conversation names them. Prefer calling them from bash with `kit <name> --help` or \
-         `kit <name> [flags | --json '{...}']`, or call this tool directly with action=search|open|run.",
+         conversation names them. Prefer running them from bash as `kit <name> --flag value` \
+         (`kit <name> --help` prints the flags), or call this tool with action=search|open|run.",
         json!({
             "type": "object",
             "properties": {
@@ -84,25 +76,31 @@ pub fn request_tools(all: &[ToolDef]) -> Vec<ToolDef> {
             .into_iter()
             .collect();
     }
-    let mut out: Vec<ToolDef> = DIRECT
-        .iter()
-        .filter_map(|n| all.iter().find(|t| t.name == *n).cloned())
-        .collect();
+    let mut out: Vec<ToolDef> = all.iter().filter(|t| is_direct(t)).cloned().collect();
     out.push(def());
     out
 }
 
 pub fn hidden(all: &[ToolDef]) -> impl Iterator<Item = &ToolDef> {
     all.iter()
-        .filter(|t| !is_direct(&t.name) && !is_kit_name(&t.name))
+        .filter(|t| !is_direct(t) && !is_kit_name(&t.name))
 }
 
 fn short_line(name: &str, description: &str) -> String {
     let budget = LINE_BYTES.saturating_sub(name.len() + 4);
-    let first = description
-        .split_inclusive(". ")
-        .next()
-        .unwrap_or("")
+    let end = description
+        .match_indices(". ")
+        .map(|(i, _)| i)
+        .find(|&i| {
+            let word = description[..i]
+                .rsplit(char::is_whitespace)
+                .next()
+                .unwrap_or("");
+            let word = word.trim_start_matches(|c: char| !c.is_alphanumeric());
+            !word.contains('.') && !matches!(word, "etc" | "vs" | "approx")
+        })
+        .unwrap_or(description.len());
+    let first = description[..end]
         .trim()
         .trim_end_matches('.')
         .split_whitespace()
@@ -179,42 +177,160 @@ pub fn search_text(all: &[ToolDef], query: &str, limit: usize) -> String {
     lines(scored.into_iter().take(limit).map(|(_, t)| t))
 }
 
+fn effective_schema(spec: &Value) -> &Value {
+    for key in ["anyOf", "oneOf"] {
+        if let Some(alts) = spec.get(key).and_then(Value::as_array)
+            && let Some(first) = alts
+                .iter()
+                .find(|a| a.get("type").and_then(Value::as_str) != Some("null"))
+        {
+            return first;
+        }
+    }
+    spec
+}
+
+fn type_of(spec: &Value) -> &str {
+    match effective_schema(spec).get("type") {
+        Some(Value::String(t)) => t.as_str(),
+        Some(Value::Array(ts)) => ts
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|t| *t != "null")
+            .unwrap_or("value"),
+        _ => "value",
+    }
+}
+
+fn scalar_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn placeholder(spec: &Value) -> String {
+    let spec = effective_schema(spec);
+    if let Some(choices) = spec.get("enum").and_then(Value::as_array) {
+        let words: Vec<String> = choices.iter().map(scalar_text).collect();
+        return words.join("|");
+    }
+    match type_of(spec) {
+        "integer" => "n".into(),
+        "number" => "number".into(),
+        "boolean" => String::new(),
+        "array" => match spec.get("items").map(type_of) {
+            Some("object") | Some("array") => "json-list".into(),
+            _ => "item".into(),
+        },
+        "object" => "json".into(),
+        _ => "text".into(),
+    }
+}
+
+fn flag_usage(key: &str, spec: &Value) -> String {
+    let flag = key.replace('_', "-");
+    let ph = placeholder(spec);
+    if ph.is_empty() {
+        format!("--{flag}")
+    } else {
+        format!("--{flag} <{ph}>")
+    }
+}
+
+fn first_paragraph(text: &str) -> String {
+    text.split("\n\n")
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn format_help(t: &ToolDef) -> String {
-    let mut out = format!(
-        "{} — {}\n\nUsage:\n  kit {} [FLAGS] [--json '{{...}}']\n",
-        t.name, t.description, t.name
-    );
-    let required: BTreeSet<&str> = t
+    let required: Vec<&str> = t
         .parameters
         .get("required")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
-    if let Some(props) = t.parameters.get("properties").and_then(Value::as_object)
-        && !props.is_empty()
-    {
-        out.push_str("\nFlags:\n");
-        for (k, spec) in props {
-            let ty = spec.get("type").and_then(Value::as_str).unwrap_or("value");
-            let req = if required.contains(k.as_str()) {
-                " (required)"
-            } else {
-                ""
-            };
+    let empty = Map::new();
+    let props = t
+        .parameters
+        .get("properties")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty);
+    let mut usage = format!("kit {}", t.name);
+    for k in &required {
+        if let Some(spec) = props.get(*k) {
+            usage.push(' ');
+            usage.push_str(&flag_usage(k, spec));
+        }
+    }
+    if props.keys().any(|k| !required.contains(&k.as_str())) {
+        usage.push_str(" [options]");
+    }
+    let mut out = format!("{}\n\n{}\n\nUsage: {usage}\n", t.name, t.description.trim());
+    let mut nested = false;
+    for (title, want_required) in [("Required", true), ("Options", false)] {
+        let rows: Vec<(&String, &Value)> = props
+            .iter()
+            .filter(|(k, _)| required.contains(&k.as_str()) == want_required)
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\n{title}:\n"));
+        for (k, spec) in rows {
+            let eff = effective_schema(spec);
+            let mut notes: Vec<String> = Vec::new();
             let desc = spec
                 .get("description")
+                .or_else(|| eff.get("description"))
                 .and_then(Value::as_str)
-                .unwrap_or("");
-            let flag = k.replace('_', "-");
-            if desc.is_empty() {
-                out.push_str(&format!("  --{flag} <{ty}>{req}\n"));
+                .map(first_paragraph)
+                .unwrap_or_default();
+            if !desc.is_empty() {
+                notes.push(desc);
+            }
+            match type_of(spec) {
+                "array" => {
+                    if matches!(eff.get("items").map(type_of), Some("object" | "array")) {
+                        nested = true;
+                        notes.push("a JSON list; easiest through stdin (see below)".into());
+                    } else {
+                        notes.push("repeat the flag once per item".into());
+                    }
+                }
+                "object" => {
+                    nested = true;
+                    notes.push("a JSON object; easiest through stdin (see below)".into());
+                }
+                "boolean" => {
+                    let flag = k.replace('_', "-");
+                    notes.push(format!("on/off switch; --no-{flag} turns it off"));
+                }
+                _ => {}
+            }
+            if let Some(d) = spec.get("default").or_else(|| eff.get("default"))
+                && !d.is_null()
+            {
+                notes.push(format!("default {}", scalar_text(d)));
+            }
+            let head = format!("  {}", flag_usage(k, spec));
+            if notes.is_empty() {
+                out.push_str(&format!("{head}\n"));
             } else {
-                out.push_str(&format!("  --{flag} <{ty}>{req}  {desc}\n"));
+                out.push_str(&format!("{head}\n      {}\n", notes.join("; ")));
             }
         }
     }
-    let schema = serde_json::to_string_pretty(&t.parameters).unwrap_or_else(|_| "{}".into());
-    out.push_str(&format!("\nSchema:\n{schema}"));
+    if nested {
+        out.push_str(&format!(
+            "\nNested input: pipe the whole input as one JSON object on stdin, flags still apply on top:\n  kit {} <<'EOF'\n  {{\"key\": \"value\"}}\n  EOF\n",
+            t.name
+        ));
+    }
     out
 }
 
@@ -286,6 +402,26 @@ fn coerce_value(raw: &str, schema: Option<&Value>) -> Value {
     }
 }
 
+fn insert_flag(obj: &mut Map<String, Value>, key: String, raw: &str, schema: Option<&Value>) {
+    let is_list = schema.map(type_of) == Some("array");
+    if !is_list {
+        obj.insert(key, coerce_value(raw, schema.map(effective_schema)));
+        return;
+    }
+    if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(raw) {
+        obj.insert(key, Value::Array(items));
+        return;
+    }
+    let item_schema = schema.map(effective_schema).and_then(|s| s.get("items"));
+    let item = coerce_value(raw, item_schema);
+    match obj.get_mut(&key) {
+        Some(Value::Array(items)) => items.push(item),
+        _ => {
+            obj.insert(key, Value::Array(vec![item]));
+        }
+    }
+}
+
 fn match_prop_key(props: Option<&Map<String, Value>>, raw_key: &str) -> String {
     if let Some(props) = props {
         if props.contains_key(raw_key) {
@@ -316,6 +452,28 @@ pub fn parse_cli_args(
         }
     }
     let props = def.parameters.get("properties").and_then(Value::as_object);
+    let open = def
+        .parameters
+        .get("additionalProperties")
+        .is_some_and(|v| v != &Value::Bool(false))
+        || props.is_none_or(Map::is_empty);
+    let known = |key: &str| -> Result<(), String> {
+        match props {
+            Some(p) if !open && !p.contains_key(key) => {
+                let flags: Vec<String> = p
+                    .keys()
+                    .map(|k| format!("--{}", k.replace('_', "-")))
+                    .collect();
+                Err(format!(
+                    "unknown flag --{}; {} takes: {}",
+                    key.replace('_', "-"),
+                    def.name,
+                    flags.join(" ")
+                ))
+            }
+            _ => Ok(()),
+        }
+    };
     let mut i = 0;
     let mut positionals: Vec<String> = Vec::new();
     while i < args.len() {
@@ -349,6 +507,7 @@ pub fn parse_cli_args(
         }
         if let Some(rest) = arg.strip_prefix("--no-") {
             let key = match_prop_key(props, rest);
+            known(&key)?;
             obj.insert(key, Value::Bool(false));
             i += 1;
             continue;
@@ -356,26 +515,30 @@ pub fn parse_cli_args(
         if let Some(rest) = arg.strip_prefix("--") {
             if let Some((raw_k, raw_v)) = rest.split_once('=') {
                 let key = match_prop_key(props, raw_k);
+                known(&key)?;
                 let schema = props.and_then(|p| p.get(&key));
-                obj.insert(key, coerce_value(raw_v, schema));
+                insert_flag(&mut obj, key, raw_v, schema);
                 i += 1;
             } else {
                 let key = match_prop_key(props, rest);
+                known(&key)?;
                 let schema = props.and_then(|p| p.get(&key));
-                let is_bool =
-                    schema.and_then(|s| s.get("type")).and_then(Value::as_str) == Some("boolean");
+                let is_bool = schema.map(type_of) == Some("boolean");
                 match args.get(i + 1) {
-                    Some(next) if !next.starts_with("--") => {
+                    Some(next) if !next.starts_with("--") && !is_bool => {
+                        insert_flag(&mut obj, key, next, schema);
+                        i += 2;
+                    }
+                    Some(next) if is_bool && matches!(next.as_str(), "true" | "false") => {
                         obj.insert(key, coerce_value(next, schema));
                         i += 2;
                     }
-                    _ if is_bool => {
+                    _ if is_bool || schema.is_none() => {
                         obj.insert(key, Value::Bool(true));
                         i += 1;
                     }
                     _ => {
-                        obj.insert(key, Value::Bool(true));
-                        i += 1;
+                        return Err(format!("--{rest} needs a value: --{rest} <value>"));
                     }
                 }
             }
@@ -404,7 +567,7 @@ pub fn parse_cli_args(
             obj.insert(key, coerce_value(&positionals.join(" "), schema));
         } else {
             return Err(format!(
-                "unexpected positional arguments: {} (use --flag value or --json '{{...}}')",
+                "unexpected positional arguments: {} (use --flag value; `kit <tool> --help` lists the flags)",
                 positionals.join(" ")
             ));
         }
@@ -419,7 +582,7 @@ pub fn announcement(all: &[ToolDef], announced: &BTreeSet<String>) -> Option<Str
     }
     if announced.is_empty() {
         return Some(format!(
-            "<kit>\nCall these from bash via `kit <name> --help` or `kit <name> [flags | --json '{{...}}']` (or `kit search <query>`).\n{}</kit>",
+            "<kit>\nThese are commands: run them from bash as `kit <name> --flag value`. `kit <name> --help` prints a tool's flags, `kit search <words>` finds more.\n{}</kit>",
             lines(hidden(all))
         ));
     }

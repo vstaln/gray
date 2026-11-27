@@ -88,6 +88,9 @@ pub struct Manifest {
     #[serde(default)]
     pub hooks: Vec<String>,
 
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_hooks: Vec<String>,
+
     /// First-argv verbs each declared command may run mid-turn; `""` is
     /// the bare command and `"*"` allows any argv. Keys that are not
     /// among `commands` are dropped at parse time.
@@ -191,6 +194,8 @@ pub fn parse_tool_entry(v: &Value) -> Option<ToolDef> {
         .get("read_only")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    def.direct = obj.get("direct").and_then(Value::as_bool) == Some(true);
+    def.hide_body = obj.get("body").and_then(Value::as_bool) == Some(false);
     if let Some(label) = obj.get("label").and_then(|l| l.as_str()) {
         let label = label.trim();
         if !label.is_empty() {
@@ -231,6 +236,17 @@ pub fn manifest_tools(v: &Value) -> Vec<ToolDef> {
 impl Manifest {
     pub fn claims(&self, hook: &str) -> bool {
         self.hooks.iter().any(|h| h == hook)
+    }
+
+    pub fn requires(&self, hook: &str) -> bool {
+        self.claims(hook) && self.required_hooks.iter().any(|h| h == hook)
+    }
+
+    pub fn tool_after_withheld(&self, reason: &str) -> ToolOutput {
+        ToolOutput::error(format!(
+            "plugin '{}' tool/after is required and failed ({reason:.160}); output withheld",
+            self.name
+        ))
     }
 
     pub fn from_result(v: &Value) -> Self {
@@ -313,6 +329,7 @@ impl Manifest {
             commands,
             turn_local,
             hooks: str_list("hooks"),
+            required_hooks: str_list("required_hooks"),
             autostart: v
                 .get("autostart")
                 .and_then(|x| x.as_bool())

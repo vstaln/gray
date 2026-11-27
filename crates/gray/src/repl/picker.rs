@@ -197,7 +197,14 @@ pub(crate) fn draw_list_picker<T>(
         .map(|item| (picker.label)(item).chars().count())
         .max()
         .unwrap_or(0);
-    let letters: Vec<String> = pick_keys.keys.iter().map(|(c, _)| c.to_string()).collect();
+    let letters: Vec<String> = pick_keys
+        .keys
+        .iter()
+        .map(|(c, _)| match c {
+            ' ' => "space".to_string(),
+            c => c.to_string(),
+        })
+        .collect();
     let mut hints = vec![
         ("↑↓", "move", true),
         ("enter", pick_keys.enter.unwrap_or("select"), true),
@@ -208,7 +215,11 @@ pub(crate) fn draw_list_picker<T>(
             .zip(&pick_keys.keys)
             .map(|(k, (_, label))| (k.as_str(), *label, true)),
     );
-    hints.push(("esc", "close", true));
+    hints.push((
+        "esc",
+        if query.is_empty() { "close" } else { "clear" },
+        true,
+    ));
     let hints_w: usize = hints
         .iter()
         .map(|(k, l, _)| k.chars().count() + l.chars().count() + 4)
@@ -244,7 +255,9 @@ pub(crate) fn draw_list_picker<T>(
     let bottom = inner.y + inner.height;
     let row = |y: u16| Rect::new(inner.x, y, inner.width, 1);
 
-    let mut filter = if query.is_empty() {
+    let mut filter = if query.is_empty() && picker.items.len() <= list_h {
+        Vec::new()
+    } else if query.is_empty() {
         vec![Span::styled("type to filter ", fg(th.text_faint))]
     } else {
         vec![
@@ -405,8 +418,8 @@ pub(crate) fn run_list_picker_keys<T>(
     use std::time::Duration;
 
     let (_session, mut terminal) = crate::setup::open_modal()?;
-    let mut sel = picker.selected;
-    let mut query = String::new();
+    let mut query = crate::setup::take_typeahead();
+    let mut sel = if query.is_empty() { picker.selected } else { 0 };
 
     loop {
         let q = query.to_lowercase();
@@ -481,7 +494,7 @@ pub(crate) fn run_list_picker_keys<T>(
                         }
                     }
                     KeyCode::Char(c)
-                        if query.is_empty()
+                        if (query.is_empty() || c == ' ')
                             && modifiers.is_empty()
                             && pick_keys.keys.iter().any(|(k, _)| *k == c) =>
                     {
@@ -513,6 +526,11 @@ pub(crate) fn run_list_picker_keys<T>(
                     }
                     _ => {}
                 }
+            }
+            Event::Paste(text) => {
+                query.extend(text.chars().filter(|c| !c.is_control()));
+                sel = 0;
+                highlight_match(picker, &query);
             }
             _ => {}
         }

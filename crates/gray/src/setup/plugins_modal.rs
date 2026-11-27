@@ -364,7 +364,6 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
 
     let mut rows = load_rows();
     let mut sel = 0usize;
-    let mut query = String::new();
     let mut detail = false;
     let mut changed = false;
     let mut op_msg: Option<String> = None;
@@ -374,6 +373,7 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
     spawn_stale_check(check_tx);
 
     let (_session, mut terminal) = super::open_modal()?;
+    let mut query = super::take_typeahead();
     let bg_snapshot = bg
         .cloned()
         .unwrap_or_else(BackgroundSnapshot::default_initial);
@@ -468,20 +468,33 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                         );
                     }
                 } else {
-                    let query_line = if query.is_empty() {
-                        "type to filter".to_string()
-                    } else {
-                        format!("{query}█")
-                    };
                     frame.render_widget(
                         Paragraph::new(Line::from(Span::styled(
-                            query_line,
-                            Style::default().fg(if query.is_empty() {
-                                th.text_dim
-                            } else {
-                                th.text_body
-                            }),
+                            "Plugins",
+                            Style::default()
+                                .fg(th.text_bright)
+                                .add_modifier(Modifier::BOLD),
                         ))),
+                        at(top),
+                    );
+                    let filter = if query.is_empty() {
+                        Line::from(Span::styled(
+                            "type to filter",
+                            Style::default().fg(th.text_faint),
+                        ))
+                    } else {
+                        Line::from(vec![
+                            Span::styled("filter ", Style::default().fg(th.text_faint)),
+                            Span::styled(
+                                query.clone(),
+                                Style::default()
+                                    .fg(th.text_bright)
+                                    .add_modifier(Modifier::UNDERLINED),
+                            ),
+                        ])
+                    };
+                    frame.render_widget(
+                        Paragraph::new(filter).alignment(ratatui::layout::Alignment::Right),
                         at(top),
                     );
                     let list_y = top + 2;
@@ -585,50 +598,35 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                     ))),
                     at(note_y),
                 );
-                let hint_segs: &[&str] = if detail {
-                    &["space toggle", "u update", "U update all", "esc back"]
+                let hints: Vec<(&str, &str, bool)> = if detail {
+                    vec![
+                        ("space", "toggle", true),
+                        ("u", "update", true),
+                        ("U", "update all", true),
+                        ("esc", "back", true),
+                    ]
                 } else {
-                    &[
-                        "↑↓ move",
-                        "type to filter",
-                        "tab toggle",
-                        "ctrl+u update",
-                        "enter details",
-                        "esc close",
-                        "toggles apply next session or /restart",
+                    vec![
+                        ("↑↓", "move", true),
+                        ("tab", "on/off", true),
+                        ("ctrl+u", "update", true),
+                        ("enter", "details", true),
+                        (
+                            "esc",
+                            if query.is_empty() { "close" } else { "clear" },
+                            true,
+                        ),
                     ]
                 };
-                let mut hint_rows: Vec<String> = vec![String::new()];
-                for seg in hint_segs {
-                    let last = hint_rows.len() - 1;
-                    let joined = if hint_rows[last].is_empty() {
-                        seg.to_string()
-                    } else {
-                        format!("{} · {seg}", hint_rows[last])
-                    };
-                    if joined.chars().count() <= w || hint_rows[last].is_empty() {
-                        hint_rows[last] = joined;
-                    } else if hint_rows.len() < 2 {
-                        hint_rows.push(seg.to_string());
-                    }
-                }
-                for (i, line) in hint_rows.iter().enumerate() {
-                    let line = if line.chars().count() > w {
-                        let cut: String = line.chars().take(w).collect();
-                        cut[..cut.rfind(' ').unwrap_or(0)]
-                            .trim_end_matches(['·', ' '])
-                            .to_string()
-                    } else {
-                        line.clone()
-                    };
-                    frame.render_widget(
-                        Paragraph::new(Line::from(Span::styled(
-                            line,
-                            Style::default().fg(th.text_faint).bg(th.surface_bg),
-                        ))),
-                        at(keys_y + i as u16),
-                    );
-                }
+                frame.render_widget(
+                    Paragraph::new(crate::repl::picker::key_hints(
+                        hints,
+                        &["ctrl+u", "enter"],
+                        w,
+                    ))
+                    .style(Style::default().bg(th.surface_bg)),
+                    at(keys_y),
+                );
             })?;
 
             if !poll(Duration::from_millis(100))? {
@@ -722,7 +720,11 @@ pub(crate) fn run_plugins_manager(bg: Option<&BackgroundSnapshot>) -> anyhow::Re
                             };
                         }
 
-                        KeyCode::Char(c) if !modifiers.contains(KeyModifiers::ALT) && c != '/' => {
+                        KeyCode::Char(c)
+                            if !modifiers.contains(KeyModifiers::ALT)
+                                && c != '/'
+                                && !(query.is_empty() && c == ' ') =>
+                        {
                             query.push(c);
                             sel = 0;
                         }

@@ -446,7 +446,8 @@ fn drive_inner(
 
     if session.mid_turn {
         let mut saw_output = false;
-        for item in &prep.tail {
+        let mut items = prep.tail.iter().peekable();
+        while let Some(item) = items.next() {
             if chat_item_type(item) == "function_call_output" {
                 let call_id = item
                     .get("call_id")
@@ -461,7 +462,11 @@ fn drive_inner(
                     })
                     .unwrap_or_default();
                 if let Some(p) = session.parked.remove(&call_id) {
-                    p.call.resolve(output);
+                    let mut images = Vec::new();
+                    while let Some(next) = items.next_if(|n| chat::image_only_message(n)) {
+                        images.extend(chat::image_blocks(next));
+                    }
+                    p.call.resolve(output, images);
                     saw_output = true;
                 } else if !chat::assistant_side(item) {
                     session.queued_prompt.push(json!({"type":"text",

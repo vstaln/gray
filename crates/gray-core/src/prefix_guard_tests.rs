@@ -41,6 +41,8 @@ fn the_first_differing_component_wins_in_prefix_order() {
         label: Default::default(),
         preview: Default::default(),
         read_only: false,
+        direct: false,
+        hide_body: false,
     });
     assert_eq!(diff(&base, &fingerprint("m", &tools)), Some(Change::Tools));
     assert_eq!(

@@ -2278,7 +2278,7 @@ pub(crate) fn run_model_panes(
                     filter_moved = true;
                     place_current = true;
                 }
-                KeyCode::Char(c) if !ctrl => {
+                KeyCode::Char(c) if !ctrl && !(filter.is_empty() && c == ' ') => {
                     filter.push(c);
                     filter_moved = true;
                     place_current = true;
