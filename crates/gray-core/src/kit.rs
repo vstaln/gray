@@ -21,15 +21,7 @@ pub const DIRECT: &[&str] = &[
     "Grep",
     "Glob",
     "apply_patch",
-    "memory",
-    "skill",
-    "skills_install",
-    "web_search",
-    "web_fetch",
     "request_user_input",
-    "subagent_spawn",
-    "subagent_message",
-    "subagent_stop",
 ];
 
 pub const LINE_BYTES: usize = 100;
@@ -49,11 +41,11 @@ pub fn bash_only() -> bool {
         == Some("1")
 }
 
-pub fn is_direct(name: &str) -> bool {
+pub fn is_direct(t: &ToolDef) -> bool {
     if bash_only() {
-        return name == "bash";
+        return t.name == "bash";
     }
-    DIRECT.contains(&name)
+    t.direct || DIRECT.contains(&t.name.as_str())
 }
 
 pub fn def() -> ToolDef {
@@ -84,17 +76,14 @@ pub fn request_tools(all: &[ToolDef]) -> Vec<ToolDef> {
             .into_iter()
             .collect();
     }
-    let mut out: Vec<ToolDef> = DIRECT
-        .iter()
-        .filter_map(|n| all.iter().find(|t| t.name == *n).cloned())
-        .collect();
+    let mut out: Vec<ToolDef> = all.iter().filter(|t| is_direct(t)).cloned().collect();
     out.push(def());
     out
 }
 
 pub fn hidden(all: &[ToolDef]) -> impl Iterator<Item = &ToolDef> {
     all.iter()
-        .filter(|t| !is_direct(&t.name) && !is_kit_name(&t.name))
+        .filter(|t| !is_direct(t) && !is_kit_name(&t.name))
 }
 
 fn short_line(name: &str, description: &str) -> String {

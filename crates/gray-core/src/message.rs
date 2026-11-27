@@ -339,6 +339,12 @@ pub struct ToolDef {
 
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
+
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct: bool,
+
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_body: bool,
 }
 
 impl ToolDef {
@@ -354,6 +360,8 @@ impl ToolDef {
             label: None,
             preview: None,
             read_only: false,
+            direct: false,
+            hide_body: false,
         }
     }
 

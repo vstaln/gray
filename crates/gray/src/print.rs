@@ -824,9 +824,6 @@ fn tool_detail(name: &str, args: &serde_json::Value, preview: Option<&str>) -> O
         "write" | "edit" | "apply_patch" | "create" | "str_replace" => {
             arg("path").map(|p| disclose(p, DETAIL_CAP))
         }
-        "skill" | "use_skill" => arg("skill")
-            .or_else(|| arg("name"))
-            .map(|n| disclose(n, DETAIL_CAP)),
         _ => None,
     }
 }
@@ -1192,28 +1189,7 @@ async fn run_print_inner(
         }
         out.write(row)?;
     }
-    let tool_labels: std::collections::HashMap<String, String> = agent
-        .tool_defs()
-        .iter()
-        .filter_map(|t| {
-            t.label
-                .as_ref()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty())
-                .map(|l| (t.name.clone(), l.to_string()))
-        })
-        .collect();
-    let tool_previews: std::collections::HashMap<String, String> = agent
-        .tool_defs()
-        .iter()
-        .filter_map(|t| {
-            t.preview
-                .as_ref()
-                .map(|x| x.trim())
-                .filter(|x| !x.is_empty())
-                .map(|x| (t.name.clone(), x.to_string()))
-        })
-        .collect();
+    let (tool_labels, tool_previews) = crate::repl::session::tool_display_maps(agent.tool_defs());
     if let Some(output) = json.as_deref_mut() {
         output.labels = tool_labels.clone();
         output.previews = tool_previews.clone();
@@ -1278,8 +1254,7 @@ async fn run_print_inner(
 
     let mut user_msg = if let Some(prompt) = prompt {
         let inline = crate::repl::attachments::extract_inline_image_paths(prompt, &cwd);
-        let expanded = crate::repl::expand_inline_skills(prompt, agent.hooks()).await;
-        crate::repl::build_user_message_with_attachments(&expanded, &inline)
+        crate::repl::build_user_message_with_attachments(prompt, &inline)
     } else {
         user_message
     };

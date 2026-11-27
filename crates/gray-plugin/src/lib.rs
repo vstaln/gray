@@ -194,6 +194,8 @@ pub fn parse_tool_entry(v: &Value) -> Option<ToolDef> {
         .get("read_only")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    def.direct = obj.get("direct").and_then(Value::as_bool) == Some(true);
+    def.hide_body = obj.get("body").and_then(Value::as_bool) == Some(false);
     if let Some(label) = obj.get("label").and_then(|l| l.as_str()) {
         let label = label.trim();
         if !label.is_empty() {
