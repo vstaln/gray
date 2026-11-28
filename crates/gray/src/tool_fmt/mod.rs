@@ -872,8 +872,8 @@ fn bash_header(
                     dim_style,
                 );
             }
-            let gray_cli = gray_cli_command(core.command);
-            let shown = gray_cli.unwrap_or(core.command);
+            let cli = cli_card_command(core.command);
+            let shown = cli.unwrap_or(core.command);
             let cut = truncate_cmd(shown);
 
             let cmd = if cut.len() < shown.len() || full.lines().nth(1).is_some() {
@@ -882,7 +882,7 @@ fn bash_header(
                 cut.to_string()
             };
             let mut spans = vec![bullet];
-            if gray_cli.is_some() {
+            if cli.is_some() {
                 let (sub, rest) = cmd.split_once(char::is_whitespace).unwrap_or((&cmd, ""));
                 spans.push(Span::styled(humanize_tool_name(sub), action_style));
                 if !rest.is_empty() {
@@ -903,12 +903,18 @@ fn bash_header(
     }
 }
 
-fn gray_cli_command(command: &str) -> Option<&str> {
+fn cli_card_command(command: &str) -> Option<&str> {
     let head = command.split_whitespace().next()?;
-    if !matches!(head.rsplit('/').next(), Some("gray" | "kit")) {
+    let program = head.rsplit('/').next()?;
+    if !matches!(program, "gray" | "kit") {
         return None;
     }
     let rest = command.get(head.len()..)?.trim_start();
+    match (program, rest) {
+        ("kit", "" | "--list") => return Some("list"),
+        ("kit", "-h" | "--help") => return Some("help"),
+        _ => {}
+    }
     let sub = rest.split_whitespace().next()?;
     if sub.starts_with('-')
         || !sub
@@ -916,6 +922,12 @@ fn gray_cli_command(command: &str) -> Option<&str> {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     {
         return None;
+    }
+    if program == "kit"
+        && let Some(action) = sub.strip_prefix("comms_")
+        && !action.is_empty()
+    {
+        return rest.strip_prefix("comms_");
     }
     Some(rest)
 }
@@ -938,7 +950,7 @@ pub(crate) fn verbless_card(name: &str, args: &serde_json::Value) -> bool {
     if !background && gray_tools::shell::label::read_only(full).is_some() {
         return false;
     }
-    gray_cli_command(core.command).is_some()
+    cli_card_command(core.command).is_some()
 }
 
 fn read_header(
