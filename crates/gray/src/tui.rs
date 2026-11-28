@@ -278,6 +278,7 @@ pub fn logo_lines() -> Vec<String> {
         LOGO_ASCII.lines().map(str::to_string).collect()
     };
     rows.into_iter()
+        .map(|l| l.replace('\u{2800}', " "))
         .filter(|l| !l.trim().is_empty())
         .map(|l| format!("  {l}"))
         .collect()

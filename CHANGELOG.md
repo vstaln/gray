@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.37] - 2026-11-28
+
+### Fixed
+- **The startup logo no longer renders as a solid block.** Blank cells in the Braille mark are drawn as spaces, so fonts that show empty Braille patterns as hollow dot grids no longer fill the whole logo rectangle.
+
 ## [0.2.36] - 2026-11-28
 
 ### Changed
