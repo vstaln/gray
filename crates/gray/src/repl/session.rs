@@ -547,7 +547,7 @@ fn tool_header(
 pub(crate) fn tool_display_maps(
     defs: &[gray_core::message::ToolDef],
 ) -> (HashMap<String, String>, HashMap<String, String>) {
-    crate::tool_fmt::note_hidden_bodies(defs);
+    crate::tool_fmt::note_tool_defs(defs);
     let mut labels = HashMap::new();
     let mut previews = HashMap::new();
     for t in defs {

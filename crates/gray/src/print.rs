@@ -584,10 +584,7 @@ fn steer_enabled() -> bool {
 
 impl JsonOutput {
     fn display_name(&self, name: &str) -> String {
-        self.labels
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| crate::tool_fmt::humanize_tool_name(name))
+        crate::tool_fmt::tool_display_name(name, self.labels.get(name).map(String::as_str))
     }
 
     fn write(&self, mut row: serde_json::Value) -> std::io::Result<()> {

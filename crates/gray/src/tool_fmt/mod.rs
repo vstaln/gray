@@ -125,17 +125,14 @@ fn tool_hue(name: &str) -> Color {
 
 fn tool_name_line(name: &str, label: Option<&str>) -> Line<'static> {
     let hue = tool_hue(name);
-    let name = match label.map(str::trim).filter(|t| !t.is_empty()) {
-        Some(label) => label.to_string(),
-        None => humanize_tool_name(name),
-    };
+    let label = tool_display_name(name, label);
     Line::from(vec![
         Span::styled(
             format!("{} ", crate::tui::glyph("\u{2b22}", "#")),
             Style::default().fg(hue).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            name.to_string(),
+            label,
             Style::default()
                 .fg(crate::theme::theme().text_body)
                 .add_modifier(Modifier::BOLD),
@@ -709,12 +706,9 @@ pub fn format_tool_call_lines(
             ask_card::asked_header(n)
         }
         n if mcp_parts(n).is_some() => {
-            let (server, tool) = mcp_parts(n).unwrap_or_default();
             let mut spans = vec![
                 bullet,
-                Span::styled("MCP ", action_style),
-                Span::styled(server.to_string(), cmd_style),
-                Span::styled(format!(" {}", tool.replace(['_', '-'], " ")), action_style),
+                Span::styled(tool_display_name(n, None), action_style),
             ];
             let preview = mcp_arg_preview(args);
             if !preview.is_empty() {
@@ -723,13 +717,15 @@ pub fn format_tool_call_lines(
             Line::from(spans)
         }
         other => {
-            let headline = args
-                .get("label")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| humanize_tool_name(other));
+            let headline = if gray_core::kit::is_kit_name(other) {
+                humanize_tool_name(
+                    args.get("action")
+                        .and_then(|a| a.as_str())
+                        .unwrap_or("tool"),
+                )
+            } else {
+                tool_display_name(other, args.get("label").and_then(|v| v.as_str()))
+            };
 
             let declared = preview_path.map(str::trim).filter(|t| !t.is_empty());
             if let Some(template) = declared.filter(|t| is_template(t)) {
@@ -910,6 +906,11 @@ fn cli_card_command(command: &str) -> Option<&str> {
         return None;
     }
     let rest = command.get(head.len()..)?.trim_start();
+    let (program, rest) = if program == "gray" && rest.split_whitespace().next() == Some("kit") {
+        ("kit", rest["kit".len()..].trim_start())
+    } else {
+        (program, rest)
+    };
     match (program, rest) {
         ("kit", "" | "--list") => return Some("list"),
         ("kit", "-h" | "--help") => return Some("help"),
@@ -923,13 +924,24 @@ fn cli_card_command(command: &str) -> Option<&str> {
     {
         return None;
     }
-    if program == "kit"
-        && let Some(action) = sub.strip_prefix("comms_")
-        && !action.is_empty()
-    {
-        return rest.strip_prefix("comms_");
+    if program != "kit" || matches!(sub, "list" | "search" | "help" | "open") {
+        return Some(rest);
     }
-    Some(rest)
+    let args = rest[sub.len()..].trim_start();
+    if let Some(next) = args.split_whitespace().next()
+        && !next.starts_with('-')
+    {
+        let defs = TOOL_DEFS.read().unwrap_or_else(|e| e.into_inner());
+        if matches!(
+            gray_core::kit::resolve_target_with(&[sub, next], |name| defs.contains_key(name)),
+            Some((_, 2))
+        ) {
+            let action = without_tool_namespace(next, sub);
+            return Some(&args[next.len() - action.len()..]);
+        }
+    }
+    let (_, action) = tool_name_parts(sub);
+    Some(&rest[sub.len() - action.len()..])
 }
 
 pub(crate) fn verbless_card(name: &str, args: &serde_json::Value) -> bool {
@@ -1179,10 +1191,57 @@ fn mcp_arg_preview(args: &serde_json::Value) -> String {
     ellipsize_cells(&text)
 }
 
-pub(crate) fn humanize_tool_name(name: &str) -> String {
+fn without_tool_namespace<'a>(name: &'a str, namespace: &str) -> &'a str {
+    name.get(..namespace.len())
+        .filter(|prefix| prefix.eq_ignore_ascii_case(namespace))
+        .and_then(|_| name[namespace.len()..].strip_prefix(['_', '-']))
+        .filter(|action| !action.is_empty())
+        .unwrap_or(name)
+}
+
+fn tool_name_parts(name: &str) -> (Option<&str>, &str) {
     if let Some((server, tool)) = mcp_parts(name) {
-        return format!("{server} \u{b7} {}", tool.replace(['_', '-'], " "));
+        return (Some(server), without_tool_namespace(tool, server));
     }
+    if !gray_core::kit::DIRECT.contains(&name)
+        && let Some((group, action)) = name.split_once(['_', '-'])
+        && !group.is_empty()
+        && !action.is_empty()
+    {
+        return (Some(group), action);
+    }
+    (None, name)
+}
+
+pub(crate) fn tool_display_name(name: &str, label: Option<&str>) -> String {
+    if gray_core::kit::is_kit_name(name) {
+        return "Tool".to_string();
+    }
+    let (namespace, action) = tool_name_parts(name);
+    let Some(label) = label.map(str::trim).filter(|label| !label.is_empty()) else {
+        return humanize_tool_name(action);
+    };
+    if let Some(namespace) = namespace {
+        let (prefix, rest) = label.split_once(char::is_whitespace).unwrap_or((label, ""));
+        let key = |b: u8| b.to_ascii_lowercase();
+        if prefix
+            .bytes()
+            .filter(u8::is_ascii_alphanumeric)
+            .map(key)
+            .eq(namespace.bytes().filter(u8::is_ascii_alphanumeric).map(key))
+        {
+            let rest = rest.trim_start();
+            return if rest.is_empty() {
+                humanize_tool_name(action)
+            } else {
+                rest.to_string()
+            };
+        }
+    }
+    label.to_string()
+}
+
+pub(crate) fn humanize_tool_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut capitalize = true;
     for ch in name.chars() {
@@ -1348,20 +1407,24 @@ fn render_numbered_lines(
     lines
 }
 
-static HIDDEN_BODIES: std::sync::RwLock<std::collections::BTreeSet<String>> =
-    std::sync::RwLock::new(std::collections::BTreeSet::new());
+static TOOL_DEFS: std::sync::RwLock<std::collections::BTreeMap<String, bool>> =
+    std::sync::RwLock::new(std::collections::BTreeMap::new());
 
-pub fn note_hidden_bodies(defs: &[gray_core::message::ToolDef]) {
-    let mut set = HIDDEN_BODIES.write().unwrap_or_else(|e| e.into_inner());
-    set.extend(defs.iter().filter(|d| d.hide_body).map(|d| d.name.clone()));
+pub fn note_tool_defs(defs: &[gray_core::message::ToolDef]) {
+    let mut known = TOOL_DEFS.write().unwrap_or_else(|e| e.into_inner());
+    for def in defs {
+        *known.entry(def.name.clone()).or_default() |= def.hide_body;
+    }
 }
 
 pub fn tool_may_render_body(tool_name: &str) -> bool {
     !matches!(tool_name, "read" | "request_user_input")
-        && !HIDDEN_BODIES
+        && !TOOL_DEFS
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .contains(tool_name)
+            .get(tool_name)
+            .copied()
+            .unwrap_or(false)
 }
 
 fn strip_shell_fence(trimmed: &str) -> String {
