@@ -168,7 +168,7 @@ fn tail_slice(text: &str, max: usize) -> (String, bool) {
 }
 
 fn quoted(body: &str, leading_ellipsis: bool, trailing_ellipsis: bool) -> String {
-    let mut text = body.to_string();
+    let mut text = body.replace("**", "");
     if leading_ellipsis {
         text.insert(0, '…');
     }
