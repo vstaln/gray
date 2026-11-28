@@ -217,19 +217,6 @@ pub(crate) async fn dispatch_command(
             .await;
             Flow::Continue
         }
-        ReplCommand::Continue(rest) => {
-            handoff::start(
-                config,
-                cwd,
-                rest,
-                agent,
-                session_state,
-                tui.as_ref().map(|(s, _)| s),
-                pending_command,
-            )
-            .await;
-            Flow::Continue
-        }
         ReplCommand::New(initial_prompt) => {
             shutdown_hooks(agent.as_ref()).await;
             *pending_history = std::sync::Arc::new(Vec::new());
