@@ -98,9 +98,6 @@ pub fn print_wrapped(text: &str, pad: usize) {
     let _ = std::io::stdout().flush();
 }
 
-pub const LOGO: &str = include_str!("../assets/logo.txt");
-pub const LOGO_ASCII: &str = include_str!("../assets/logo-ascii.txt");
-
 #[cfg(windows)]
 fn modern_windows_terminal() -> bool {
     use std::env::{var, var_os};
@@ -262,25 +259,24 @@ pub(crate) fn glyph(unicode: &'static str, ascii: &'static str) -> &'static str 
     if unicode_safe() { unicode } else { ascii }
 }
 
-pub fn logo_mark() -> &'static [String] {
-    static MARK: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    MARK.get_or_init(|| {
-        LOGO.lines()
-            .map(|l| l.trim_end_matches('\u{2800}').to_string())
-            .collect()
-    })
-}
-
 pub fn logo_lines() -> Vec<String> {
-    let rows: Vec<String> = if unicode_safe() {
-        logo_mark().to_vec()
-    } else {
-        LOGO_ASCII.lines().map(str::to_string).collect()
-    };
-    rows.into_iter()
-        .map(|l| l.replace('\u{2800}', " "))
+    let safe = unicode_safe();
+    crate::logo::mark()
+        .into_iter()
+        .map(|cells| {
+            let row: String = cells
+                .iter()
+                .map(|c| {
+                    if safe {
+                        c.glyph
+                    } else {
+                        crate::tui::braille_fallback(c.glyph)
+                    }
+                })
+                .collect();
+            format!("  {}", row.trim_end())
+        })
         .filter(|l| !l.trim().is_empty())
-        .map(|l| format!("  {l}"))
         .collect()
 }
 

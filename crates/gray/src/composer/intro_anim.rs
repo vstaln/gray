@@ -64,7 +64,7 @@ impl Tui {
                     Line::from(spans)
                 })
                 .collect();
-            frame.render_widget(Paragraph::new(lines), area);
+            frame.render_widget(Paragraph::new(lines).style(Style::default().bg(bg)), area);
             let row = ratatui::layout::Rect::new(
                 area.x,
                 area.y + area.height.saturating_sub(1),

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.2.38] - 2026-11-28
+
+### Fixed
+- **The startup logo keeps its proportions in every terminal.** The mark is rasterized at runtime from the pen geometry into Braille, sized from the terminal's real cell aspect, so it is no longer stretched on terminals whose cells differ from the one the old baked frames assumed.
+- **The intro fills the whole screen with the theme background.** Rows below the logo no longer show the terminal's own background while the intro plays.
+- **`kit` commands show their tool name.** A `kit recall` call renders as "Recall", the same way `gray` subcommands do.
+
+### Changed
+- **The logo is drawn in mid grey, with a glow at the pen tips while it draws.**
+
 ## [0.2.37] - 2026-11-28
 
 ### Fixed

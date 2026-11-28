@@ -12,6 +12,7 @@ pub mod host;
 pub mod keymap;
 pub mod kit_cli;
 pub mod logging;
+pub(crate) mod logo;
 pub(crate) mod mascot;
 pub(crate) mod oneshot;
 pub mod plugin_cli;

@@ -19,7 +19,6 @@ pub(crate) const MIN_VIEWPORT_H: u16 = 4;
 
 pub(crate) mod action;
 pub(crate) mod cache_stats;
-mod glow;
 pub(crate) mod kitty;
 mod plugin_widget;
 mod terminal;

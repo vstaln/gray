@@ -30,13 +30,9 @@ pub(super) fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
 }
 
-/// Frame index for `elapsed` into the intro. Frames advance at an even
-/// cadence (smooth), with a light ease-out: quick off the mark, a gentle
-/// landing, and no frozen stretch at either end.
-pub(super) fn intro_frame_index(elapsed: Duration, last: usize) -> usize {
+pub(super) fn intro_progress(elapsed: Duration) -> f32 {
     let t = (elapsed.as_secs_f32() * 1000.0 / DRAW_MS as f32).clamp(0.0, 1.0);
-    let eased = 0.6 * t + 0.4 * (1.0 - (1.0 - t) * (1.0 - t));
-    ((eased * last as f32).round() as usize).min(last)
+    0.6 * t + 0.4 * (1.0 - (1.0 - t) * (1.0 - t))
 }
 
 /// Colour a fade starts from: the window background when it's a real
@@ -79,193 +75,6 @@ pub(crate) fn fade_buffer(buf: &mut ratatui::buffer::Buffer, alpha: f32) {
     }
 }
 
-pub(super) const INTRO_FRAMES_TXT: &str = include_str!("../../assets/logo-intro-frames.txt");
-
-pub(super) fn intro_frames() -> &'static [(Vec<String>, Vec<String>)] {
-    static FRAMES: std::sync::OnceLock<Vec<(Vec<String>, Vec<String>)>> =
-        std::sync::OnceLock::new();
-    FRAMES.get_or_init(|| {
-        let text = INTRO_FRAMES_TXT.replace("\r\n", "\n");
-        let table: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("#|")).collect();
-        let mut frames: Vec<(Vec<String>, Vec<String>)> = text
-            .split("\n---\n")
-            .filter_map(|block| {
-                let rows: Vec<String> = block
-                    .lines()
-                    .filter_map(|l| l.trim().parse::<usize>().ok().and_then(|i| table.get(i)))
-                    .map(|r| r.to_string())
-                    .collect();
-                (rows.len() == 24).then(|| {
-                    let (mark, edge) = rows.split_at(12);
-                    (mark.to_vec(), edge.to_vec())
-                })
-            })
-            .collect();
-
-        // The last baked frame is the finished mark; the settle grows into
-        // it from the frame before, so drop it rather than jump to it and
-        // then retract (the old backstep). Blank lead-in frames and the
-        // baked hold (runs of identical frames) only stall the draw.
-        let full = frames.pop();
-        let blank = |rows: &[String]| {
-            rows.iter()
-                .all(|l| l.chars().all(|c| c == '\u{2800}' || c == ' '))
-        };
-        let mut timeline: Vec<(Vec<String>, Vec<String>)> = Vec::with_capacity(frames.len());
-        for f in frames {
-            if blank(&f.0) || timeline.last().is_some_and(|p| p.0 == f.0) {
-                continue;
-            }
-            timeline.push(f);
-        }
-        let settle = timeline
-            .last()
-            .map(|(mark, _)| intro_settle_frames(mark))
-            .unwrap_or_default();
-        if settle.is_empty() {
-            timeline.extend(full);
-        } else {
-            timeline.extend(settle);
-        }
-        // A settle from an already-complete frame is all repeats; every
-        // repeated frame is dead time on the clock.
-        timeline.dedup_by(|later, earlier| later.0 == earlier.0);
-        timeline
-    })
-}
-
-pub(super) const BRAILLE_BITS: [(usize, usize, u32); 8] = [
-    (0, 0, 0x01),
-    (0, 1, 0x02),
-    (0, 2, 0x04),
-    (0, 3, 0x40),
-    (1, 0, 0x08),
-    (1, 1, 0x10),
-    (1, 2, 0x20),
-    (1, 3, 0x80),
-];
-
-pub(super) const MARK_CELLS: (usize, usize) = (32, 12);
-
-pub(super) const INTRO_SETTLE_FRAMES: usize = 12;
-
-pub(super) fn braille_dots(rows: &[String]) -> std::collections::BTreeSet<(usize, usize)> {
-    let mut out = std::collections::BTreeSet::new();
-    for (r, line) in rows.iter().enumerate() {
-        for (c, ch) in line.chars().enumerate() {
-            if !('\u{2800}'..='\u{28ff}').contains(&ch) {
-                continue;
-            }
-            let bits = ch as u32 - 0x2800;
-            for &(dx, dy, bit) in &BRAILLE_BITS {
-                if bits & bit != 0 {
-                    out.insert((c * 2 + dx, r * 4 + dy));
-                }
-            }
-        }
-    }
-    out
-}
-
-pub(super) fn dots_braille(dots: &std::collections::BTreeSet<(usize, usize)>) -> Vec<String> {
-    let (cx, cy) = MARK_CELLS;
-    (0..cy)
-        .map(|r| {
-            (0..cx)
-                .map(|c| {
-                    let bits = BRAILLE_BITS.iter().fold(0, |bits, &(dx, dy, bit)| {
-                        if dots.contains(&(c * 2 + dx, r * 4 + dy)) {
-                            bits | bit
-                        } else {
-                            bits
-                        }
-                    });
-                    char::from_u32(0x2800 + bits).unwrap()
-                })
-                .collect()
-        })
-        .collect()
-}
-
-pub(super) fn intro_settle_frames(from: &[String]) -> Vec<(Vec<String>, Vec<String>)> {
-    let (cx, cy) = MARK_CELLS;
-    // Settle math stays in braille space on every terminal: the render pass
-    // maps cells to an ASCII ramp when unicode is unsafe, and LOGO_ASCII rows
-    // carry no dot data for braille_dots() to settle toward.
-    let blank = '\u{2800}';
-    let mut target: Vec<String> = crate::tui::logo_mark()
-        .iter()
-        .map(|l| {
-            let mut s = l.to_string();
-            while s.chars().count() < cx {
-                s.push(blank);
-            }
-            s
-        })
-        .collect();
-    target.resize(cy, blank.to_string().repeat(cx));
-    let want = braille_dots(&target);
-    let mut ink = braille_dots(from);
-    if ink.difference(&want).next().is_some() {
-        return Vec::new();
-    }
-
-    let mut frontier = ink.clone();
-    let mut missing: std::collections::BTreeSet<(usize, usize)> =
-        want.difference(&ink).copied().collect();
-    let mut ordered = Vec::with_capacity(missing.len());
-    while !missing.is_empty() {
-        let mut ring: Vec<(usize, usize)> = missing
-            .iter()
-            .copied()
-            .filter(|&(x, y)| {
-                (-1isize..=1).any(|ox| {
-                    (-1isize..=1).any(|oy| {
-                        x.checked_add_signed(ox)
-                            .zip(y.checked_add_signed(oy))
-                            .is_some_and(|p| frontier.contains(&p))
-                    })
-                })
-            })
-            .collect();
-        if ring.is_empty() {
-            ring = missing.iter().copied().collect();
-        }
-        ring.sort_by_key(|&(x, y)| (y, x));
-        for d in ring {
-            frontier.insert(d);
-            missing.remove(&d);
-            ordered.push(d);
-        }
-    }
-    let grow = INTRO_SETTLE_FRAMES - 2;
-    (0..INTRO_SETTLE_FRAMES)
-        .map(|i| {
-            let add: &[(usize, usize)] = if i < grow {
-                &ordered[i * ordered.len() / grow..(i + 1) * ordered.len() / grow]
-            } else {
-                &[]
-            };
-            ink.extend(add.iter().copied());
-            let fresh: std::collections::BTreeSet<(usize, usize)> =
-                add.iter().map(|&(x, y)| (x / 2, y / 4)).collect();
-            let mark = if ink == want {
-                target.clone()
-            } else {
-                dots_braille(&ink)
-            };
-            let edge = (0..cy)
-                .map(|r| {
-                    (0..cx)
-                        .map(|c| if fresh.contains(&(c, r)) { '1' } else { '0' })
-                        .collect()
-                })
-                .collect();
-            (mark, edge)
-        })
-        .collect()
-}
-
 pub(super) fn welcome_body_lines(
     w: usize,
     progress: f32,
@@ -296,72 +105,41 @@ pub(crate) fn welcome_body_lines_at(
 
     let mut body: Vec<Line<'static>> = Vec::new();
 
-    let base = theme.text_dim;
-    let hilite = theme.text_bright;
-    let frames = intro_frames();
-    let last = frames.len().saturating_sub(1);
-    let frame_idx = match intro {
-        Some(elapsed) => intro_frame_index(elapsed, last),
-        None => ((progress.clamp(0.0, 1.0) * last as f32).round() as usize).min(last),
+    let time = match intro {
+        Some(elapsed) => crate::logo::intro_time(intro_progress(elapsed)),
+        None => crate::logo::intro_time(progress),
     };
     let ms = intro.map(|e| e.as_secs_f32() * 1000.0);
     let mark_alpha = ms.map_or(1.0, |ms| ease_out_cubic(ms / MARK_FADE_MS));
     let title_alpha = ms.map_or(1.0, |ms| {
         ease_out_cubic((ms - TITLE_FADE_MS.0) / (TITLE_FADE_MS.1 - TITLE_FADE_MS.0))
     });
-    let empty = (Vec::new(), Vec::new());
-    let (mark_rows, edge_rows) = frames.get(frame_idx).unwrap_or(&empty);
-    let l_rows = mark_rows.len().max(1) as f32;
-    let max_logo_w = mark_rows
-        .iter()
-        .map(|l| display_width(l.trim()))
-        .max()
-        .unwrap_or(0);
-    let l_cols = (max_logo_w as f32).max(1.0);
-    let logo_pad = x + col_w.saturating_sub(max_logo_w) / 2;
-
+    let mark = crate::logo::mark_at(time);
+    let mark_w = mark.first().map_or(0, Vec::len);
+    let logo_pad = x + col_w.saturating_sub(mark_w) / 2;
     let safe = crate::tui::unicode_safe();
-    // Only while drawing: the settled banner is the plain mark.
-    let heat =
-        (safe && intro.is_some() && frame_idx < last).then(|| glow::heat_map(frames, frame_idx));
-    for (row, line) in mark_rows.iter().enumerate() {
-        // Fresh-ink highlights belong to the draw; the settled banner is
-        // one even gradient.
-        let edge = match intro {
-            Some(_) => edge_rows.get(row).map(String::as_str).unwrap_or(""),
-            None => "",
-        };
+    for cells in &mark {
         let mut spans: Vec<Span<'static>> = Vec::new();
         if logo_pad > 0 {
             spans.push(Span::raw(" ".repeat(logo_pad)));
         }
-        for (col, ch) in line.chars().enumerate() {
-            let ch = if safe {
-                ch
-            } else {
-                crate::tui::braille_fallback(ch)
-            };
-            let h = heat
-                .as_ref()
-                .and_then(|m| m.get(row)?.get(col).copied())
-                .unwrap_or(0.0);
-            let ch = glow::heat_glyph(ch, h);
-            if ch.is_whitespace() || ch == '\u{2800}' {
+        for cell in cells {
+            if cell.glyph == ' ' {
                 spans.push(Span::raw(" "));
                 continue;
             }
-            let mut color = if edge.chars().nth(col) == Some('1') {
-                hilite
+            let glyph = if safe {
+                cell.glyph
             } else {
-                let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
-                let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
-                crate::tui::blend_color(base, hilite, t)
+                crate::tui::braille_fallback(cell.glyph)
             };
-            if h > 0.0 {
-                color = crate::tui::blend_color(color, hilite, h);
-            }
+            let color = crate::tui::blend_color(
+                ratatui::style::Color::Rgb(100, 100, 100),
+                theme.text_bright,
+                cell.glow,
+            );
             spans.push(Span::styled(
-                ch.to_string(),
+                glyph.to_string(),
                 Style::default().fg(faded(color, mark_alpha)),
             ));
         }
