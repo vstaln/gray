@@ -131,7 +131,7 @@ pub(crate) fn welcome_body_lines_at(
             let glyph = if safe { cell } else { crate::logo::ascii(cell) };
             spans.push(Span::styled(
                 glyph.to_string(),
-                Style::default().fg(faded(theme.text_bright, mark_alpha)),
+                Style::default().fg(faded(theme.text_muted, mark_alpha)),
             ));
         }
         body.push(Line::from(spans));
