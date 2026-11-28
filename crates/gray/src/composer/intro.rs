@@ -131,7 +131,7 @@ pub(crate) fn welcome_body_lines_at(
             let glyph = if safe {
                 cell.glyph
             } else {
-                crate::logo::ascii(cell.glyph)
+                crate::tui::braille_fallback(cell.glyph)
             };
             let color = crate::tui::blend_color(
                 ratatui::style::Color::Rgb(100, 100, 100),

@@ -2,11 +2,9 @@ use std::sync::OnceLock;
 
 pub(crate) const MARK_ROWS: usize = 12;
 
-const SAMPLES: usize = 4;
+const SAMPLES: usize = 3;
 const GLOW_REACH: f32 = 18.0;
-const QUADRANTS: [char; 16] = [
-    ' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█',
-];
+const DOT_BITS: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
 
 #[derive(Clone, Copy)]
 pub(crate) struct MarkCell {
@@ -173,34 +171,28 @@ pub(crate) fn mark_at(time: f32) -> Vec<Vec<MarkCell>> {
     let covered = |x: f32, y: f32| {
         inside_hull(&pens.hull, x, y) && paths.iter().any(|p| on_stroke(p, half, x, y))
     };
-    let quadrant = |col: usize, row: usize, qx: usize, qy: usize| -> f32 {
-        let left = x0 + col as f32 * cell_w + qx as f32 * cell_w / 2.0;
-        let top = y0 + row as f32 * cell_h + qy as f32 * cell_h / 2.0;
+    let (dot_w, dot_h) = (cell_w / 2.0, cell_h / 4.0);
+    let dot_lit = |col: usize, row: usize, dx: usize, dy: usize| -> bool {
+        let left = x0 + col as f32 * cell_w + dx as f32 * dot_w;
+        let top = y0 + row as f32 * cell_h + dy as f32 * dot_h;
         let hits = (0..SAMPLES * SAMPLES)
             .filter(|i| {
-                let sx = left + ((i % SAMPLES) as f32 + 0.5) / SAMPLES as f32 * cell_w / 2.0;
-                let sy = top + ((i / SAMPLES) as f32 + 0.5) / SAMPLES as f32 * cell_h / 2.0;
+                let sx = left + ((i % SAMPLES) as f32 + 0.5) / SAMPLES as f32 * dot_w;
+                let sy = top + ((i / SAMPLES) as f32 + 0.5) / SAMPLES as f32 * dot_h;
                 covered(sx, sy)
             })
             .count();
-        hits as f32 / (SAMPLES * SAMPLES) as f32
+        hits * 2 >= SAMPLES * SAMPLES
     };
 
     (0..MARK_ROWS)
         .map(|row| {
             (0..cols)
                 .map(|col| {
-                    let cover = [
-                        quadrant(col, row, 0, 0),
-                        quadrant(col, row, 1, 0),
-                        quadrant(col, row, 0, 1),
-                        quadrant(col, row, 1, 1),
-                    ];
-                    let mask = cover
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, c)| **c >= 0.5)
-                        .fold(0, |m, (i, _)| m | (1 << i));
+                    let bits = (0..4)
+                        .flat_map(|dy| (0..2).map(move |dx| (dx, dy)))
+                        .filter(|&(dx, dy)| dot_lit(col, row, dx, dy))
+                        .fold(0, |m, (dx, dy)| m | DOT_BITS[dy][dx]);
                     let cx = x0 + (col as f32 + 0.5) * cell_w;
                     let cy = y0 + (row as f32 + 0.5) * cell_h;
                     let glow = tips
@@ -208,7 +200,11 @@ pub(crate) fn mark_at(time: f32) -> Vec<Vec<MarkCell>> {
                         .map(|t| (1.0 - (t[0] - cx).hypot(t[1] - cy) / GLOW_REACH).max(0.0))
                         .fold(0.0f32, f32::max);
                     MarkCell {
-                        glyph: QUADRANTS[mask],
+                        glyph: if bits == 0 {
+                            ' '
+                        } else {
+                            char::from_u32(0x2800 + bits).unwrap_or(' ')
+                        },
                         glow: glow * glow,
                     }
                 })
@@ -219,12 +215,4 @@ pub(crate) fn mark_at(time: f32) -> Vec<Vec<MarkCell>> {
 
 pub(crate) fn mark() -> Vec<Vec<MarkCell>> {
     mark_at(pens().end)
-}
-
-pub(crate) fn ascii(glyph: char) -> char {
-    match QUADRANTS.iter().position(|&q| q == glyph) {
-        Some(0) | None => ' ',
-        Some(mask) if (mask as u32).count_ones() <= 2 => '+',
-        Some(_) => '#',
-    }
 }

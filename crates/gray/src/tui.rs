@@ -270,7 +270,7 @@ pub fn logo_lines() -> Vec<String> {
                     if safe {
                         c.glyph
                     } else {
-                        crate::logo::ascii(c.glyph)
+                        crate::tui::braille_fallback(c.glyph)
                     }
                 })
                 .collect();
