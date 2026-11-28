@@ -53,13 +53,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         surface: CmdSurface::Text,
     },
     CmdDef {
-        name: "continue",
-        desc: "carry this chat, or a named one, into a fresh chat",
-        aliases: &[],
-        scope: CmdScope::Conversation,
-        surface: CmdSurface::Text,
-    },
-    CmdDef {
         name: "compact",
         desc: "summarize context",
         aliases: &["compress"],
@@ -459,8 +452,6 @@ pub enum ReplCommand {
 
     New(Option<String>),
 
-    Continue(Option<String>),
-
     Resume(ResumeArgs),
 
     Compact(Option<String>),
@@ -594,7 +585,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
             _ => ReplCommand::Unknown(t.to_string()),
         },
         Some("new") => ReplCommand::New(opt(rest)),
-        Some("continue") => ReplCommand::Continue(opt(rest)),
         Some("compact") => ReplCommand::Compact(opt(rest)),
         Some("undo") => ReplCommand::Undo,
         Some("retry") => ReplCommand::Retry,

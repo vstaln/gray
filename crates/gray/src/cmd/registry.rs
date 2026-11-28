@@ -10,7 +10,6 @@ fn args_hint(name: &str) -> Option<&'static str> {
         "models" => Some("provider/model-id [slot=option ...] (empty opens the picker)"),
         "sessions" => Some("[id|--last|--all]"),
         "new" => Some("[first message]"),
-        "continue" => Some("[session] [message]"),
         "compact" => Some("[instructions]"),
         "context" => Some("[tokens|auto|status|reserve|keep]"),
         "agentsmd" => Some("[show|reset]"),
