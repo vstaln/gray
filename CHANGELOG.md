@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.2.39] - 2026-11-29
+
+### Changed
+- **Tool cards show only the action.** Kit, plugin and MCP calls are titled by what they do (`Recall`, `Send`, `Fetch`, `Explore`) instead of `kit recall`, `comms_send` or `MCP codegraph codegraph explore`. Invocation names are unchanged.
+
+### Fixed
+- **The model picker's quota rows refresh properly.** A fresh usage reply now replaces the cached windows for each account instead of merging into them, so windows a provider stopped reporting and old rate-limit notes (`quota_event`, `quota`) no longer linger for 30 days. A window whose reset time has passed reads 0%.
+
 ## [0.2.38] - 2026-11-28
 
 ### Fixed
