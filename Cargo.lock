@@ -895,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "gray"
-version = "0.2.38"
+version = "0.2.39"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -936,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "gray-acp"
-version = "0.2.38"
+version = "0.2.39"
 dependencies = [
  "anyhow",
  "libc",
@@ -948,7 +948,7 @@ dependencies = [
 
 [[package]]
 name = "gray-core"
-version = "0.2.38"
+version = "0.2.39"
 dependencies = [
  "async-trait",
  "base64",
@@ -968,7 +968,7 @@ dependencies = [
 
 [[package]]
 name = "gray-markdown"
-version = "0.2.38"
+version = "0.2.39"
 dependencies = [
  "anstyle",
  "anstyle-lossy",
@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "gray-pkg"
-version = "0.2.38"
+version = "0.2.39"
 dependencies = [
  "anyhow",
  "axum",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "gray-plugin"
-version = "0.2.38"
+version = "0.2.39"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "gray-provider"
-version = "0.2.38"
+version = "0.2.39"
 dependencies = [
  "async-trait",
  "base64",
@@ -1048,7 +1048,7 @@ dependencies = [
 
 [[package]]
 name = "gray-tools"
-version = "0.2.38"
+version = "0.2.39"
 dependencies = [
  "async-trait",
  "base64",
