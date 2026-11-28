@@ -123,15 +123,24 @@ pub(crate) fn welcome_body_lines_at(
         if logo_pad > 0 {
             spans.push(Span::raw(" ".repeat(logo_pad)));
         }
-        for &cell in cells {
-            if cell == ' ' {
+        for cell in cells {
+            if cell.glyph == ' ' {
                 spans.push(Span::raw(" "));
                 continue;
             }
-            let glyph = if safe { cell } else { crate::logo::ascii(cell) };
+            let glyph = if safe {
+                cell.glyph
+            } else {
+                crate::logo::ascii(cell.glyph)
+            };
+            let color = crate::tui::blend_color(
+                ratatui::style::Color::Rgb(100, 100, 100),
+                theme.text_bright,
+                cell.glow,
+            );
             spans.push(Span::styled(
                 glyph.to_string(),
-                Style::default().fg(faded(theme.text_muted, mark_alpha)),
+                Style::default().fg(faded(color, mark_alpha)),
             ));
         }
         body.push(Line::from(spans));

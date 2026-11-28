@@ -266,7 +266,13 @@ pub fn logo_lines() -> Vec<String> {
         .map(|cells| {
             let row: String = cells
                 .iter()
-                .map(|&c| if safe { c } else { crate::logo::ascii(c) })
+                .map(|c| {
+                    if safe {
+                        c.glyph
+                    } else {
+                        crate::logo::ascii(c.glyph)
+                    }
+                })
                 .collect();
             format!("  {}", row.trim_end())
         })
