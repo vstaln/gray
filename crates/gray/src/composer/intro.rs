@@ -346,7 +346,7 @@ pub(crate) fn welcome_body_lines_at(
                 .and_then(|m| m.get(row)?.get(col).copied())
                 .unwrap_or(0.0);
             let ch = glow::heat_glyph(ch, h);
-            if ch.is_whitespace() || ch == ' ' {
+            if ch.is_whitespace() || ch == '\u{2800}' {
                 spans.push(Span::raw(" "));
                 continue;
             }
