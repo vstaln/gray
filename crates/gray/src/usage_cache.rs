@@ -142,12 +142,18 @@ pub(crate) fn record_usage(provider: &str, accounts: &Value) {
     let provider = provider_key(provider).to_string();
     let now = now();
     let mut windows = load();
+    let mut reported: Vec<(Option<String>, Vec<String>)> = Vec::new();
     for account in accounts.as_array().into_iter().flatten() {
         let label = account["label"].as_str().map(str::to_string);
-        for window in account["usage"]["windows"].as_array().into_iter().flatten() {
+        let Some(list) = account["usage"]["windows"].as_array() else {
+            continue;
+        };
+        let mut ids = Vec::new();
+        for window in list {
             let Some(id) = window["id"].as_str().or_else(|| window["label"].as_str()) else {
                 continue;
             };
+            ids.push(id.to_lowercase());
             let display_label = window["label"]
                 .as_str()
                 .map(str::trim)
@@ -168,6 +174,18 @@ pub(crate) fn record_usage(provider: &str, accounts: &Value) {
                 },
             );
         }
+        reported.push((label, ids));
+    }
+    if !reported.is_empty() {
+        windows.retain(|w| {
+            if w.provider != provider {
+                return true;
+            }
+            match reported.iter().find(|(account, _)| *account == w.account) {
+                Some((_, ids)) => ids.contains(&w.window),
+                None => w.account.is_some(),
+            }
+        });
     }
     save(&windows);
 }
@@ -281,7 +299,7 @@ pub(crate) fn for_row(provider: &str, account: Option<&str>, serving: bool) -> V
 
 pub(crate) fn state(window: &Window, now: i64) -> WindowState {
     let exhausted = window.limit.is_some() || window.last_seen_pct.is_some_and(|pct| pct >= 100.0);
-    if exhausted && window.resets_at.is_some_and(|at| at <= now) {
+    if window.resets_at.is_some_and(|at| at <= now) {
         return WindowState::Percent(0.0);
     }
     match window.resets_at {

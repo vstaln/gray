@@ -335,15 +335,22 @@ pub fn format_help(t: &ToolDef) -> String {
 }
 
 pub fn resolve_target(all: &[ToolDef], argv: &[String]) -> Option<(String, usize)> {
-    let first = argv.first()?.as_str();
-    if all.iter().any(|t| t.name == first) {
+    resolve_target_with(argv, |name| all.iter().any(|t| t.name == name))
+}
+
+pub fn resolve_target_with(
+    argv: &[impl AsRef<str>],
+    exists: impl Fn(&str) -> bool,
+) -> Option<(String, usize)> {
+    let first = argv.first()?.as_ref();
+    if exists(first) {
         return Some((first.to_string(), 1));
     }
     let first_under = first.replace('-', "_");
-    if all.iter().any(|t| t.name == first_under) {
+    if exists(&first_under) {
         return Some((first_under, 1));
     }
-    if let Some(second) = argv.get(1) {
+    if let Some(second) = argv.get(1).map(|arg| arg.as_ref()) {
         let srv = first.replace('-', "_");
         let tool = second.replace('-', "_");
         for cand in [
@@ -352,7 +359,7 @@ pub fn resolve_target(all: &[ToolDef], argv: &[String]) -> Option<(String, usize
             format!("{first}_{second}"),
             format!("{srv}_{tool}"),
         ] {
-            if all.iter().any(|t| t.name == cand) {
+            if exists(&cand) {
                 return Some((cand, 2));
             }
         }

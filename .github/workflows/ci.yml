@@ -146,6 +146,12 @@ jobs:
         run: ./scripts/perf-floor.sh
       - name: stdio protocol doc matches the code
         run: ./target/release/gray --dump-protocol | diff -u crates/gray/docs/stdio-protocol.md -
+      - if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-native-preview
+          path: target/release/gray
+          retention-days: 3
 
   installer-smoke:
     runs-on: ubuntu-latest
