@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.2.36] - 2026-11-28
+
+### Changed
+- **`/continue` moved to the gray-essentials plugin.** The built-in command is gone; essentials 0.6.0 (default profile) provides it as the `continue` part with the same handoff text. `/new [first message]` is unchanged.
+
 ## [0.2.35] - 2026-11-28
 
 ### Fixed
