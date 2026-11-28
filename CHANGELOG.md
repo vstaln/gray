@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.35] - 2026-11-28
+
+### Fixed
+- **Subscription limits stay visible and quota-blocked turns resume.** Account command output is collected without blocking on pipe capacity, cached usage survives a failed refresh, the Antigravity relay's quota warning is recognised, and structured reset hints reach auto-continue even after short retries run out.
+- **`/continue` handoffs no longer show raw asterisks.** The quoted last request and reply drop markdown bold markers, which rendered literally in the plain-text user message.
+
 ## [0.2.34] - 2026-11-27
 
 ### Added
