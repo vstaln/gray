@@ -105,48 +105,33 @@ pub(crate) fn welcome_body_lines_at(
 
     let mut body: Vec<Line<'static>> = Vec::new();
 
-    let base = theme.text_dim;
-    let hilite = theme.text_bright;
     let time = match intro {
         Some(elapsed) => crate::logo::intro_time(intro_progress(elapsed)),
         None => crate::logo::intro_time(progress),
     };
-    let drawing = intro.is_some_and(|e| e < Duration::from_millis(DRAW_MS));
     let ms = intro.map(|e| e.as_secs_f32() * 1000.0);
     let mark_alpha = ms.map_or(1.0, |ms| ease_out_cubic(ms / MARK_FADE_MS));
     let title_alpha = ms.map_or(1.0, |ms| {
         ease_out_cubic((ms - TITLE_FADE_MS.0) / (TITLE_FADE_MS.1 - TITLE_FADE_MS.0))
     });
     let mark = crate::logo::mark_at(time);
-    let l_rows = mark.len().max(1) as f32;
     let mark_w = mark.first().map_or(0, Vec::len);
-    let l_cols = (mark_w as f32).max(1.0);
     let logo_pad = x + col_w.saturating_sub(mark_w) / 2;
     let safe = crate::tui::unicode_safe();
-    for (row, cells) in mark.iter().enumerate() {
+    for cells in &mark {
         let mut spans: Vec<Span<'static>> = Vec::new();
         if logo_pad > 0 {
             spans.push(Span::raw(" ".repeat(logo_pad)));
         }
-        for (col, cell) in cells.iter().enumerate() {
-            if cell.ink <= 0.0 {
+        for &cell in cells {
+            if cell == ' ' {
                 spans.push(Span::raw(" "));
                 continue;
             }
-            let glyph = if safe {
-                cell.glyph
-            } else {
-                crate::logo::ascii(cell.glyph)
-            };
-            let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
-            let mut color =
-                crate::tui::blend_color(base, hilite, (0.15 + 0.85 * diag).clamp(0.0, 1.0));
-            if drawing && cell.heat > 0.0 {
-                color = crate::tui::blend_color(color, hilite, cell.heat);
-            }
+            let glyph = if safe { cell } else { crate::logo::ascii(cell) };
             spans.push(Span::styled(
                 glyph.to_string(),
-                Style::default().fg(faded(color, mark_alpha * cell.ink)),
+                Style::default().fg(faded(theme.text_bright, mark_alpha)),
             ));
         }
         body.push(Line::from(spans));

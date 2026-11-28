@@ -3,17 +3,9 @@ use std::sync::OnceLock;
 pub(crate) const MARK_ROWS: usize = 12;
 
 const SAMPLES: usize = 4;
-const HEAT_REACH: f32 = 14.0;
 const QUADRANTS: [char; 16] = [
     ' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█',
 ];
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct MarkCell {
-    pub glyph: char,
-    pub ink: f32,
-    pub heat: f32,
-}
 
 #[derive(serde::Deserialize)]
 struct Stroke {
@@ -134,7 +126,7 @@ pub(crate) fn intro_time(progress: f32) -> f32 {
     first + progress.clamp(0.0, 1.0) * (pens.end - first)
 }
 
-pub(crate) fn mark_at(time: f32) -> Vec<Vec<MarkCell>> {
+pub(crate) fn mark_at(time: f32) -> Vec<Vec<char>> {
     let pens = pens();
     let (x0, x1) = pens
         .hull
@@ -154,7 +146,6 @@ pub(crate) fn mark_at(time: f32) -> Vec<Vec<MarkCell>> {
     let (cell_w, cell_h) = ((x1 - x0) / cols as f32, (y1 - y0) / MARK_ROWS as f32);
 
     let mut paths = Vec::with_capacity(pens.strokes.len());
-    let mut tips = Vec::new();
     for s in &pens.strokes {
         let frac = if time >= s.start + s.dur {
             1.0
@@ -164,11 +155,7 @@ pub(crate) fn mark_at(time: f32) -> Vec<Vec<MarkCell>> {
         if frac <= 1e-6 {
             continue;
         }
-        let path = drawn(&s.path, frac);
-        if frac < 1.0 {
-            tips.extend(path.last().copied());
-        }
-        paths.push(path);
+        paths.push(drawn(&s.path, frac));
     }
     let half = pens.band / 2.0;
     let covered = |x: f32, y: f32| {
@@ -197,37 +184,19 @@ pub(crate) fn mark_at(time: f32) -> Vec<Vec<MarkCell>> {
                         quadrant(col, row, 0, 1),
                         quadrant(col, row, 1, 1),
                     ];
-                    let lit: Vec<f32> = cover.iter().copied().filter(|&c| c >= 0.5).collect();
                     let mask = cover
                         .iter()
                         .enumerate()
                         .filter(|(_, c)| **c >= 0.5)
                         .fold(0, |m, (i, _)| m | (1 << i));
-                    if lit.is_empty() {
-                        return MarkCell {
-                            glyph: ' ',
-                            ink: 0.0,
-                            heat: 0.0,
-                        };
-                    }
-                    let cx = x0 + (col as f32 + 0.5) * cell_w;
-                    let cy = y0 + (row as f32 + 0.5) * cell_h;
-                    let heat = tips
-                        .iter()
-                        .map(|t| (1.0 - (t[0] - cx).hypot(t[1] - cy) / HEAT_REACH).max(0.0))
-                        .fold(0.0f32, f32::max);
-                    MarkCell {
-                        glyph: QUADRANTS[mask],
-                        ink: lit.iter().sum::<f32>() / lit.len() as f32,
-                        heat: heat * heat,
-                    }
+                    QUADRANTS[mask]
                 })
                 .collect()
         })
         .collect()
 }
 
-pub(crate) fn mark() -> Vec<Vec<MarkCell>> {
+pub(crate) fn mark() -> Vec<Vec<char>> {
     mark_at(pens().end)
 }
 
